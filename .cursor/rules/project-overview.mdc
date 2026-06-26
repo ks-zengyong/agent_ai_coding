@@ -1,0 +1,35 @@
+---
+description: TUI Coding Agent 项目目标、约束与交付要求
+alwaysApply: true
+---
+
+# 项目概览
+
+本项目实现 `TOPIC.md` 要求的**最小可用 TUI 终端编码 Agent**（Python），参考 `opencode/`、`codex/`、`DeepSeek-Reasonix/` 仅作灵感，**不得以其为基底修改提交**。
+
+## 核心能力
+
+- **Agent Loop**：模型决策 → 工具调用 → 结果回传 → 继续推理
+- **工具系统**：read_file、write_file、edit_file、list_directory、glob、search_code、execute_command
+- **权限控制**：只读自动执行；写入/编辑/Shell 需用户确认，拒绝结果纳入会话
+- **TUI**：展示用户输入、模型回复、工具调用、执行结果、权限确认、运行状态
+- **配置**：用户级 `~/.tui_agent/config.toml` + 项目级 `./.tui_agent/config.toml`，`--config` / `--config-dir` 优先级更高
+- **会话**：完整历史写入 `.ai_history/logs/`
+
+## 扩展要求（INIT.md）
+
+1. **自我反馈测试**：以生成贪吃蛇小游戏为验证目标（支持 Python / C++），遇无法解析或不支持能力时自我反馈并完善
+2. **DebugInfo**：打印 request/response，异常信息直观优雅
+3. **任务记录**：每次会话结束向 `TASK.md` 追加记录（见 `task-logging` 规则）
+
+## 交付清单
+
+- 可运行源码 + 测试（`pytest tests/ -v`）
+- `.ai_history/logs/` 协作记录
+- `deliverables/` 验证截图（含贪吃蛇 Demo）
+
+## 参考文档
+
+- 题目：`TOPIC.md`
+- 规范：`.trae/specs/tui-coding-agent/spec.md`
+- 进度：`.trae/specs/tui-coding-agent/checklist.md`

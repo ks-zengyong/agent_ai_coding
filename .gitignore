@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# 测试与工具
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+
+# 环境变量（含 API Key）
+.env
+.env.*
+
+# 会话日志可提交样例，大量日志可选忽略
+# .ai_history/logs/*.jsonl
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 贪吃蛇验证产物（保留截图，可忽略临时构建）
+deliverables/snake_demo_cpp/*.o
+deliverables/snake_demo_cpp/*.exe
+
+# CMake / MSVC 构建产物
+**/build/
+**/CMakeFiles/
+**/cmake-build-*/

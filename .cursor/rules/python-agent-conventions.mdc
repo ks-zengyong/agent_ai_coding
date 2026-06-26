@@ -1,0 +1,40 @@
+---
+description: src/ 下 Python Agent 代码约定
+globs: src/**/*.py
+alwaysApply: false
+---
+
+# Python Agent 代码约定
+
+## 模块职责
+
+| 模块 | 职责 |
+|------|------|
+| `agent.py` | Agent 状态机与主循环 |
+| `context.py` | Session、Message 类型、上下文压缩、持久化 |
+| `config.py` | 配置加载与优先级合并 |
+| `permissions.py` | PermissionGuard、只读/写入分类 |
+| `llm/` | Provider 抽象、OpenAI 兼容实现、Mock |
+| `tools/` | 工具注册、文件系统、Shell |
+| `tui.py` | TUI 布局与内置命令 |
+
+## 编码原则
+
+- 保持模块边界清晰，不在 TUI 中写业务逻辑
+- 工具输入/输出使用结构化 dict，错误信息可被模型理解并重试
+- 异步接口保持一致（`async def` + `await`）
+- API Key 不得在日志或 TUI 中明文展示
+
+## 工具权限映射
+
+```python
+# 只读：自动执行
+READ_ONLY = {"read_file", "list_directory", "glob", "search_code"}
+# 需确认：write_file, edit_file, execute_command
+```
+
+## LLM Provider
+
+- 实现 `BaseLLMProvider`：chat、流式、工具调用解析、超时、重试
+- 测试优先使用 `MockProvider`，集成测试使用项目配置
+- Debug 输出走统一 DebugInfo 模块，不在各处散落 `print`

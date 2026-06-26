@@ -1,0 +1,49 @@
+---
+description: 测试、API 配置与 DebugInfo 要求
+globs: tests/**/*.py,src/llm/**/*
+alwaysApply: false
+---
+
+# 测试与 API 配置
+
+## 测试命令
+
+```bash
+pytest tests/ -v
+```
+
+必覆盖：Agent Loop、工具回传、权限确认/拒绝、配置优先级、Mock Provider。
+
+## 测试用 API 配置（INIT.md）
+
+| 项 | 值 |
+|----|-----|
+| OpenAI Base URL | `https://ai-kas.kso.net/codeplan/v1` |
+| 模型 | `deepseek/deepseek-v4-pro` |
+| API Key | 见下方配置优先级 |
+
+### 配置优先级（低 → 高）
+
+1. 默认值
+2. `~/.tui_agent/config.toml`
+3. `{project_dir}/.tui_agent/config.toml`
+4. `--config-dir` 目录下的 `config.toml`
+5. `--config` 或 `TUI_AGENT_CONFIG`
+6. 环境变量 `TUI_AGENT_API_KEY`（仅覆盖 api_key）
+
+当前测试时 api_key 通常来自项目内 `.tui_agent/config.toml`。
+
+## DebugInfo 要求
+
+LLM 调用与工具异常须输出：
+
+1. **Request**：URL、模型、消息摘要（脱敏 key）、tools 列表
+2. **Response**：content、tool_calls、finish_reason、token 用量（如有）
+3. **异常**：类型、消息、可操作建议（重试/检查配置/解析修复）
+
+使用 Rich 或统一 formatter，避免裸 traceback 直接抛给用户。
+
+## 自我反馈测试
+
+贪吃蛇验证流程见 `.cursor/skills/snake-game-validation/SKILL.md`：
+生成 → 运行 → 失败则分析 response/解析问题 → 修复 Agent 能力 → 重试。
