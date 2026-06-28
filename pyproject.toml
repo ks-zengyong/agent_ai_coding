@@ -6,13 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "tui-coding-agent"
 version = "0.1.0"
 description = "A TUI terminal coding Agent with Agent Loop, tool system, and permission control"
-requires-python = ">=3.9"
-dependencies = [
-    "pydantic>=2.0.0",
-    "httpx>=0.25.0",
-    "tomli>=2.0.0; python_version<'3.11'",
-    "rich>=13.0.0",
-]
+requires-python = ">=3.11"
+dependencies = []
+
+# 运行时零依赖：httpx / rich / pygments / anyio / httpcore / h11 / sniffio /
+# idna / certifi / markdown_it / mdurl 已 vendoring 到 src/_vendor/，
+# 由 src/__init__.py 注入 sys.path 优先加载；config 用标准库 dataclasses 实现。
+# 因此 `pip install -e .` 无需拉取任何运行时依赖即可 `python -m src.main` 运行。
 
 [project.optional-dependencies]
 dev = [

@@ -18,6 +18,8 @@ def create_provider_from_profile(profile: ModelProfile, log_level: str = "info")
             model=profile.model,
             timeout_secs=profile.timeout_secs,
             max_retries=profile.max_retries,
+            max_tokens=profile.max_tokens,
+            temperature=profile.temperature,
             log_level=log_level,
         )
     if provider_name == "anthropic":
@@ -28,6 +30,8 @@ def create_provider_from_profile(profile: ModelProfile, log_level: str = "info")
             model=profile.model,
             timeout_secs=profile.timeout_secs,
             max_retries=profile.max_retries,
+            max_tokens=profile.max_tokens,
+            temperature=profile.temperature,
             log_level=log_level,
         )
     raise ValueError(f"Unknown provider: {profile.provider}")

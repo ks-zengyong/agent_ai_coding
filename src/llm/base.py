@@ -4,7 +4,25 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional
+
+
+class StreamEventType(str, Enum):
+    TEXT_DELTA = "text_delta"
+    TOOL_USE = "tool_use"
+    DONE = "done"
+    ERROR = "error"
+
+
+@dataclass
+class StreamEvent:
+    """单个流式事件。"""
+    type: StreamEventType
+    text: str = ""
+    tool_call: Optional[ToolCall] = None
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -62,6 +80,20 @@ class BaseLLMProvider(ABC):
     async def chat_stream(self, messages: List[ChatMessage]) -> AsyncIterator[str]:
         """Stream a chat completion response token by token."""
         ...
+
+    async def chat_stream_events(self, messages: List[ChatMessage]) -> AsyncIterator[StreamEvent]:
+        """Stream chat completion as structured events (text_delta / tool_use / done).
+
+        默认实现回退到 ``chat()``，将完整响应包装为单次 DONE 事件。
+        子类应覆写此方法以提供真正的流式事件。
+        """
+        response = await self.chat(messages)
+        if response.content:
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=response.content)
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                yield StreamEvent(type=StreamEventType.TOOL_USE, tool_call=tc)
+        yield StreamEvent(type=StreamEventType.DONE)
 
     @abstractmethod
     def get_tool_definitions(self) -> List[Dict[str, Any]]:

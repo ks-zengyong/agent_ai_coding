@@ -77,8 +77,15 @@ def main() -> None:
     tool_definitions = tool_registry.get_tool_definitions()
     provider = model_registry.apply_tools_to_active(tool_definitions)
 
+    # 启动 LLM 请求日志 session：生成唯一 ID，后续每次请求自动写入
+    # ai_history/<session_id>/<idx>.log
+    from src import debug_info
+    debug_info.start_session(config.history_dir)
+
     if args.verbose:
         from src.config import mask_api_key
+        # verbose 模式开启 debug 日志，使 LLM Request/Response panel 在 TUI 中显示
+        debug_info.configure(enabled=True, log_level="debug")
         print("Config sources (low → high priority):")
         for src in config.config_sources:
             print(f"  - {src}")

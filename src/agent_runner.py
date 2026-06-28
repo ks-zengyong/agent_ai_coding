@@ -9,7 +9,7 @@ from src.agent import AgentState, CodingAgent
 from src.context import Message, MessageType
 
 
-SYSTEM_PROMPT = """You are a terminal coding agent. Complete user tasks by calling tools.
+_SYSTEM_PROMPT_TEMPLATE = """You are a terminal coding agent. Your identity is {identity}. You are NOT Claude, NOT ChatGPT, NOT any other assistant. Complete user tasks by calling tools.
 
 Rules:
 - Use read_file, list_directory, glob, search_code for exploration (auto-approved).
@@ -18,6 +18,8 @@ Rules:
 - Work step by step: explore → write/edit → run/test → fix errors.
 - When the task is done, reply with a short summary (no more tool calls).
 - NEVER reply with only a plan ("I will explore...") — immediately call tools in the same turn.
+- NEVER introduce yourself as Claude, ChatGPT, or any other brand — you are {identity}.
+- NEVER run GUI programs (.exe games, windows, graphical apps) via execute_command — they block forever. Use console-only commands.
 
 C++ / CMake / MSVC (Windows):
 - ALWAYS call detect_build_toolchain first before probing compilers manually.
@@ -28,6 +30,20 @@ C++ / CMake / MSVC (Windows):
 - Never end the task after empty tool output — try another approach."""
 
 
+def build_system_prompt(model_identity: Optional[str] = None) -> str:
+    """构造 system prompt，注入当前激活模型的身份信息。
+
+    ``model_identity`` 为 None 时使用中性表述，避免在未知模型下写死厂商名。
+    切换模型时由调用方传入新的 ``display_label()``，身份随之更新。
+    """
+    identity = model_identity or "the configured LLM"
+    return _SYSTEM_PROMPT_TEMPLATE.format(identity=identity)
+
+
+# 向后兼容：无身份信息的默认 prompt（headless / 旧调用方仍可直接引用）
+SYSTEM_PROMPT = build_system_prompt()
+
+
 async def run_agent_until_done(
     agent: CodingAgent,
     user_message: str,
@@ -35,11 +51,16 @@ async def run_agent_until_done(
     auto_approve: bool = True,
     max_steps: int = 200,
     on_step: Optional[Callable[[CodingAgent], None]] = None,
+    model_identity: Optional[str] = None,
 ) -> AgentState:
-    """Run agent loop until done, error, or max steps."""
+    """Run agent loop until done, error, or max steps.
+
+    ``model_identity`` 透传给 :func:`build_system_prompt`，用于在 system prompt
+    中声明当前模型身份，抑制长上下文下的身份漂移。None 时使用中性表述。
+    """
     if not any(m.type == MessageType.USER for m in agent.session.messages):
         agent.session.add_message(
-            Message(type=MessageType.USER, content=f"[System]\n{SYSTEM_PROMPT}")
+            Message(type=MessageType.USER, content=f"[System]\n{build_system_prompt(model_identity)}")
         )
 
     agent.session.add_message(Message(type=MessageType.USER, content=user_message))

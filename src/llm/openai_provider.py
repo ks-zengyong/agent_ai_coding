@@ -13,7 +13,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from src import debug_info
 
-from .base import BaseLLMProvider, ChatMessage, ChatResponse, ToolCall
+from .base import (
+    BaseLLMProvider,
+    ChatMessage,
+    ChatResponse,
+    StreamEvent,
+    StreamEventType,
+    ToolCall,
+)
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -27,12 +34,16 @@ class OpenAIProvider(BaseLLMProvider):
         timeout_secs: int = 60,
         max_retries: int = 3,
         log_level: str = "info",
+        max_tokens: int = 8192,
+        temperature: float = 0.0,
     ) -> None:
         self._api_url = api_url.rstrip("/")
         self._api_key = api_key
         self._model = model
         self._timeout = timeout_secs
         self._max_retries = max_retries
+        self._max_tokens = max_tokens
+        self._temperature = temperature
         self._tools: List[Dict[str, Any]] = []
         debug_info.configure(enabled=True, log_level=log_level)
 
@@ -49,6 +60,8 @@ class OpenAIProvider(BaseLLMProvider):
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": [m.to_dict() for m in messages],
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
         }
         if self._tools:
             payload["tools"] = self._tools
@@ -63,6 +76,7 @@ class OpenAIProvider(BaseLLMProvider):
             tools=self._tools,
             timeout_secs=self._timeout,
             max_retries=self._max_retries,
+            payload=payload,
         )
 
         async with httpx.AsyncClient(timeout=self._timeout, verify=False) as client:
@@ -87,7 +101,8 @@ class OpenAIProvider(BaseLLMProvider):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
-            raw_preview=raw_text[:300] if debug_info._should_log_debug() else None,
+            raw_preview=raw_text[:300],
+            raw_response=raw_text,
         )
 
         return ChatResponse(content=full_content, tool_calls=tool_calls)
@@ -230,6 +245,162 @@ class OpenAIProvider(BaseLLMProvider):
                                 yield delta["content"]
                         except (json.JSONDecodeError, KeyError):
                             continue
+
+    async def chat_stream_events(self, messages: List[ChatMessage]) -> AsyncIterator[StreamEvent]:
+        """Stream chat completion as structured events (text_delta / tool_use / done)."""
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "messages": [m.to_dict() for m in messages],
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+            "stream": True,
+        }
+        if self._tools:
+            payload["tools"] = self._tools
+            payload["tool_choice"] = "auto"
+
+        debug_info.log_request(
+            provider="openai",
+            model=self._model,
+            api_url=self._api_url,
+            api_key=self._api_key,
+            messages=messages,
+            tools=self._tools,
+            timeout_secs=self._timeout,
+            max_retries=self._max_retries,
+            payload=payload,
+        )
+
+        accumulated_text = ""
+        tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
+        yielded_tool_indices: set = set()
+        finish_reason: Optional[str] = None
+        usage: Optional[Dict[str, Any]] = None
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, verify=False) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._api_url}/chat/completions",
+                    headers=self._get_headers(),
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if "usage" in chunk:
+                            usage = chunk["usage"]
+
+                        choice = chunk.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+
+                        if "content" in delta and delta["content"]:
+                            accumulated_text += delta["content"]
+                            yield StreamEvent(
+                                type=StreamEventType.TEXT_DELTA,
+                                text=delta["content"],
+                            )
+
+                        if "tool_calls" in delta and delta["tool_calls"]:
+                            for tc in delta["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                if idx not in tool_calls_by_index:
+                                    tool_calls_by_index[idx] = {
+                                        "id": "",
+                                        "name": "",
+                                        "arguments": "",
+                                    }
+                                entry = tool_calls_by_index[idx]
+                                if tc.get("id"):
+                                    entry["id"] = tc["id"]
+                                fn = tc.get("function", {})
+                                if fn.get("name"):
+                                    entry["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    entry["arguments"] += fn["arguments"]
+
+                                # Yield when the tool call is complete:
+                                # has id, name, and valid JSON arguments
+                                if idx not in yielded_tool_indices:
+                                    if entry["id"] and entry["name"] and entry["arguments"]:
+                                        try:
+                                            parsed_args = json.loads(entry["arguments"])
+                                        except json.JSONDecodeError:
+                                            continue  # arguments not yet complete
+                                        yielded_tool_indices.add(idx)
+                                        yield StreamEvent(
+                                            type=StreamEventType.TOOL_USE,
+                                            tool_call=ToolCall(
+                                                id=entry["id"],
+                                                name=entry["name"],
+                                                arguments=parsed_args,
+                                            ),
+                                        )
+
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+
+            # Yield any remaining complete tool calls that weren't yielded mid-stream
+            for idx, entry in tool_calls_by_index.items():
+                if idx not in yielded_tool_indices and entry["id"] and entry["name"]:
+                    try:
+                        parsed_args = (
+                            json.loads(entry["arguments"])
+                            if entry["arguments"].strip()
+                            else {}
+                        )
+                    except json.JSONDecodeError:
+                        parsed_args = {"_raw": entry["arguments"]}
+                    yield StreamEvent(
+                        type=StreamEventType.TOOL_USE,
+                        tool_call=ToolCall(
+                            id=entry["id"],
+                            name=entry["name"],
+                            arguments=parsed_args,
+                        ),
+                    )
+
+            # Build final ToolCall list for logging
+            final_tool_calls: List[ToolCall] = []
+            for e in tool_calls_by_index.values():
+                if not e["id"] or not e["name"]:
+                    continue
+                args = e["arguments"]
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except json.JSONDecodeError:
+                        args = {"_raw": args}
+                final_tool_calls.append(ToolCall(id=e["id"], name=e["name"], arguments=args))
+
+            debug_info.log_response(
+                content=accumulated_text,
+                tool_calls=final_tool_calls or None,
+                finish_reason=finish_reason,
+                usage=usage,
+                raw_preview=accumulated_text[:300],
+                raw_response=accumulated_text,
+            )
+
+            yield StreamEvent(
+                type=StreamEventType.DONE,
+                finish_reason=finish_reason,
+                usage=usage,
+            )
+
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as e:
+            yield StreamEvent(type=StreamEventType.ERROR, text=str(e))
 
     async def _with_retry(self, func, *args, **kwargs):
         last_exc: Optional[Exception] = None

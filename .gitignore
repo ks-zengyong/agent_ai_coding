@@ -21,6 +21,9 @@ htmlcov/
 .env
 .env.*
 
+# 项目级配置（含 API Key，勿提交；用户级 ~/.tui_agent/config.toml 同理）
+.tui_agent/config.toml
+
 # 会话日志可提交样例，大量日志可选忽略
 # .ai_history/logs/*.jsonl
 

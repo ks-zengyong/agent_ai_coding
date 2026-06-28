@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional
+from typing import AsyncIterator, List, Optional
 
 from src.context import Message, MessageType, Session
-from src.llm.base import BaseLLMProvider, ToolCall
+from src.llm.base import BaseLLMProvider, StreamEvent, StreamEventType, ToolCall
 from src.permissions import PermissionGuard
 from src.tools.registry import ToolRegistry
 
@@ -128,6 +128,86 @@ class CodingAgent:
             return True
 
         return False
+
+    async def step_stream(self) -> AsyncIterator[StreamEvent]:
+        """Execute one agent step with streaming events."""
+        if self.state == AgentState.DONE or self.state == AgentState.ERROR:
+            return
+        if self.loop_count >= self.max_loop:
+            self.state = AgentState.DONE
+            return
+
+        self.loop_count += 1
+
+        if self.state == AgentState.IDLE or self.state == AgentState.THINKING:
+            self.state = AgentState.THINKING
+            try:
+                chat_messages = self.session.to_chat_messages()
+                accumulated_text = ""
+                accumulated_tool_calls: List[ToolCall] = []
+
+                async for event in self.provider.chat_stream_events(chat_messages):
+                    if event.type == StreamEventType.TEXT_DELTA:
+                        accumulated_text += event.text
+                        yield event
+                    elif event.type == StreamEventType.TOOL_USE:
+                        if event.tool_call:
+                            accumulated_tool_calls.append(event.tool_call)
+                            yield event
+                    elif event.type == StreamEventType.DONE:
+                        # Build assistant message from accumulated stream
+                        assistant_msg = Message(
+                            type=MessageType.ASSISTANT,
+                            content=accumulated_text,
+                            tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+                        )
+                        self.session.add_message(assistant_msg)
+
+                        if accumulated_tool_calls:
+                            self._empty_response_retries = 0
+                            self.pending_tool_call = accumulated_tool_calls[0]
+                            self.pending_tool_queue = list(accumulated_tool_calls[1:])
+                            self._schedule_next_tool()
+                        else:
+                            content = accumulated_text.strip()
+                            if self._should_finish_without_tools(content):
+                                self._empty_response_retries = 0
+                                self.state = AgentState.DONE
+                            elif self._empty_response_retries < self._max_empty_response_retries:
+                                if not content:
+                                    reason = "Your last response was empty."
+                                elif self._wants_to_continue_working(content):
+                                    reason = "You described a plan but did not call any tools."
+                                else:
+                                    reason = "You replied with text only without tool calls."
+                                self._nudge_to_continue(reason)
+                            else:
+                                self.state = AgentState.DONE
+                        yield event
+                        return
+                    elif event.type == StreamEventType.ERROR:
+                        raise RuntimeError(event.text or "Stream error")
+            except Exception as e:
+                from src import debug_info
+                debug_info.log_error(e, context="agent.think", suggestion="检查 LLM 响应与工具解析")
+                self.state = AgentState.ERROR
+                error_msg = Message(type=MessageType.ERROR, content=str(e))
+                self.session.add_message(error_msg)
+                yield StreamEvent(type=StreamEventType.ERROR, text=str(e))
+            return
+
+        if self.state == AgentState.EXECUTING:
+            if self.pending_tool_call:
+                await self.execute_tool(self.pending_tool_call)
+                self.pending_tool_call = None
+                if self.pending_tool_queue:
+                    self._schedule_next_tool()
+                else:
+                    self.state = AgentState.THINKING
+            return
+
+        if self.state == AgentState.AWAITING_PERMISSION:
+            return
 
     async def think(self) -> None:
         self.state = AgentState.THINKING
