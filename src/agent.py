@@ -150,6 +150,8 @@ class CodingAgent:
                     if event.type == StreamEventType.TEXT_DELTA:
                         accumulated_text += event.text
                         yield event
+                    elif event.type == StreamEventType.THINKING_DELTA:
+                        yield event
                     elif event.type == StreamEventType.TOOL_USE:
                         if event.tool_call:
                             accumulated_tool_calls.append(event.tool_call)

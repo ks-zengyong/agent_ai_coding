@@ -4,7 +4,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator, Dict, List
 
-from .base import BaseLLMProvider, ChatMessage, ChatResponse, ToolCall
+from .base import (
+    BaseLLMProvider,
+    ChatMessage,
+    ChatResponse,
+    StreamEvent,
+    StreamEventType,
+    ToolCall,
+)
 
 
 class MockProvider(BaseLLMProvider):
@@ -43,6 +50,16 @@ class MockProvider(BaseLLMProvider):
         for char in response.content:
             yield char
             await asyncio.sleep(0.001)
+
+    async def chat_stream_events(self, messages: List[ChatMessage]) -> AsyncIterator[StreamEvent]:
+        response = await self.chat(messages)
+        for char in response.content:
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=char)
+            await asyncio.sleep(0)
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                yield StreamEvent(type=StreamEventType.TOOL_USE, tool_call=tc)
+        yield StreamEvent(type=StreamEventType.DONE)
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         return self._tools

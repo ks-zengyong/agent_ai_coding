@@ -45,7 +45,6 @@ class OpenAIProvider(BaseLLMProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._tools: List[Dict[str, Any]] = []
-        debug_info.configure(enabled=True, log_level=log_level)
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -302,6 +301,14 @@ class OpenAIProvider(BaseLLMProvider):
 
                         choice = chunk.get("choices", [{}])[0]
                         delta = choice.get("delta", {})
+
+                        # Extended thinking / reasoning fields (DeepSeek, etc.)
+                        for reasoning_key in ("reasoning_content", "reasoning", "thinking"):
+                            if reasoning_key in delta and delta[reasoning_key]:
+                                yield StreamEvent(
+                                    type=StreamEventType.THINKING_DELTA,
+                                    text=delta[reasoning_key],
+                                )
 
                         if "content" in delta and delta["content"]:
                             accumulated_text += delta["content"]

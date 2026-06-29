@@ -55,12 +55,21 @@ class PermissionConfig:
 
 
 @dataclass
+class TuiConfig:
+    stream: bool = True
+    show_thinking: str = "collapsed"  # collapsed | expanded | hidden
+    render_markdown: bool = True
+    tool_result_preview: int = 500
+
+
+@dataclass
 class Config:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     models: List[ModelProfile] = field(default_factory=list)
     active_model: str = ""
     tools: List[ToolConfig] = field(default_factory=list)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
+    tui: TuiConfig = field(default_factory=TuiConfig)
     history_dir: Path = field(default_factory=lambda: Path(".ai_history/logs"))
     log_level: str = "info"
     config_sources: List[str] = field(default_factory=list)
@@ -192,6 +201,8 @@ class Config:
             data["provider"] = _build_dataclass(ProviderConfig, data["provider"])
         if isinstance(data.get("permission"), dict):
             data["permission"] = _build_dataclass(PermissionConfig, data["permission"])
+        if isinstance(data.get("tui"), dict):
+            data["tui"] = _build_dataclass(TuiConfig, data["tui"])
         if isinstance(data.get("models"), list):
             data["models"] = [
                 _build_dataclass(ModelProfile, m) if isinstance(m, dict) else m
@@ -311,6 +322,13 @@ def _merge_configs(base: Config, override: Config) -> Config:
         confirm_shell=override.permission.confirm_shell,
     )
 
+    merged_tui = TuiConfig(
+        stream=override.tui.stream,
+        show_thinking=override.tui.show_thinking,
+        render_markdown=override.tui.render_markdown,
+        tool_result_preview=override.tui.tool_result_preview,
+    )
+
     # 用 Path 相等比较，避免 Windows 下 str(Path) 含反斜杠导致误判
     history = (
         override.history_dir
@@ -324,6 +342,7 @@ def _merge_configs(base: Config, override: Config) -> Config:
         active_model=merged_active,
         tools=merged_tools,
         permission=merged_permission,
+        tui=merged_tui,
         history_dir=history,
         log_level=_pick(override.log_level, base.log_level, sentinel="info"),
     )

@@ -40,7 +40,6 @@ class AnthropicProvider(BaseLLMProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._tools: List[Dict[str, Any]] = []
-        debug_info.configure(enabled=True, log_level=log_level)
 
     def _messages_endpoint(self) -> str:
         if self._api_url.endswith("/v1/messages"):
@@ -221,7 +220,15 @@ class AnthropicProvider(BaseLLMProvider):
                                 delta_type = delta.get("type", "")
                                 state = block_states.get(idx)
 
-                                if delta_type == "text_delta" and state:
+                                if delta_type == "thinking_delta" and state:
+                                    thinking_fragment = delta.get("thinking", "")
+                                    state["text"] += thinking_fragment
+                                    yield StreamEvent(
+                                        type=StreamEventType.THINKING_DELTA,
+                                        text=thinking_fragment,
+                                    )
+
+                                elif delta_type == "text_delta" and state:
                                     text_fragment = delta.get("text", "")
                                     state["text"] += text_fragment
                                     accumulated_text += text_fragment

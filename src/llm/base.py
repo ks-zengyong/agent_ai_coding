@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 class StreamEventType(str, Enum):
     TEXT_DELTA = "text_delta"
+    THINKING_DELTA = "thinking_delta"
     TOOL_USE = "tool_use"
     DONE = "done"
     ERROR = "error"
