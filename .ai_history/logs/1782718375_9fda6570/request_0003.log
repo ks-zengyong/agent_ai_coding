@@ -1,0 +1,254 @@
+{
+  "idx": 3,
+  "provider": "openai",
+  "url": "https://ai-kas.kso.net/codeplan/v1",
+  "method": "POST",
+  "timeout_secs": 60,
+  "max_retries": 3,
+  "api_key": "86c8***c302",
+  "payload": {
+    "model": "deepseek/deepseek-v4-pro",
+    "messages": [
+      {
+        "role": "user",
+        "content": "[System]\nYou are a terminal coding agent. Your identity is DeepSeek V4 (OpenAI). You are NOT Claude, NOT ChatGPT, NOT any other assistant. Complete user tasks by calling tools.\n\nRules:\n- Use read_file, list_directory, glob, search_code for exploration (auto-approved).\n- Use write_file to create files, edit_file to modify, execute_command to run/tests.\n- Pass tool arguments as valid JSON matching the tool schema.\n- Work step by step: explore → write/edit → run/test → fix errors.\n- When the task is done, reply with a short summary (no more tool calls).\n- NEVER reply with only a plan (\"I will explore...\") — immediately call tools in the same turn.\n- NEVER introduce yourself as Claude, ChatGPT, or any other brand — you are DeepSeek V4 (OpenAI).\n- NEVER run GUI programs (.exe games, windows, graphical apps) via execute_command — they block forever. Use console-only commands.\n\nC++ / CMake / MSVC (Windows):\n- ALWAYS call detect_build_toolchain first before probing compilers manually.\n- For MSVC builds use execute_command with use_msvc_env=true.\n- Typical flow: write CMakeLists.txt → cmake -B build -G \"Visual Studio 17 2022\" -A x64\n  → cmake --build build --config Release (both with use_msvc_env=true).\n- Empty command output still has exit_code in the result; read it carefully.\n- Never end the task after empty tool output — try another approach."
+      },
+      {
+        "role": "user",
+        "content": "用c++写一个贪吃蛇游戏到deliverables/snake_game"
+      },
+      {
+        "role": "assistant",
+        "content": "I'll build a complete Snake game in C++ for Windows console. Let me start by setting up the project structure.",
+        "tool_calls": [
+          {
+            "id": "call_00_qQsbaYtpLQXtuifMcRRF2524",
+            "type": "function",
+            "function": {
+              "name": "list_directory",
+              "arguments": "{\"path\": \".\"}"
+            }
+          },
+          {
+            "id": "call_01_4xZ8iDyRqkeK5LSLs1gY8309",
+            "type": "function",
+            "function": {
+              "name": "detect_build_toolchain",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": ".ai_history/\n.cursor/\n.git/\n.gitignore\n.pytest_cache/\n.tui_agent/\nAGENTS.md\nbuild/\nconfig_template.toml\ndeliverables/\npyproject.toml\nREADME.md\nscripts/\nsrc/\nTASK.md\ntests/\nTOPIC.md",
+        "tool_call_id": "call_00_qQsbaYtpLQXtuifMcRRF2524"
+      },
+      {
+        "role": "tool",
+        "content": "platform: Windows 10\ncmake in PATH: C:\\MyProgram\\CMake\\bin\\cmake.EXE\ncmake --version (exit 0):\ncmake version 4.1.1\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).\nninja in PATH: D:\\code\\depot_tools\\ninja.BAT\ncl in PATH (no vcvars): not found\nvcvars64.bat: C:\\MyProgram\\VisualStudio\\2022\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat\ncl via vcvars (exit 0):\n**********************************************************************\n** Visual Studio 2022 Developer Command Prompt v17.8.3\n** Copyright (c) 2022 Microsoft Corporation\n**********************************************************************\n[vcvarsall.bat] Environment initialized for: 'x64'\n用于 x64 的 Microsoft (R) C/C++ 优化编译器 19.38.33133 版\n版权所有(C) Microsoft Corporation。保留所有权利。\n\n用法: cl [ 选项... ] 文件名... [ /link 链接选项... ]\ncmake via vcvars (exit 0):\n**********************************************************************\n** Visual Studio 2022 Developer Command Prompt v17.8.3\n** Copyright (c) 2022 Microsoft Corporation\n**********************************************************************\n[vcvarsall.bat] Environment initialized for: 'x64'\ncmake ve\n\nMSVC + CMake recommended workflow:\n  1. detect_build_toolchain (this tool)\n  2. write CMakeLists.txt + sources\n  3. execute_command with use_msvc_env=true, e.g. cmake -B build -G \"Visual Studio 17 2022\" -A x64\n  4. execute_command use_msvc_env=true: cmake --build build --config Release",
+        "tool_call_id": "call_01_4xZ8iDyRqkeK5LSLs1gY8309"
+      },
+      {
+        "role": "assistant",
+        "content": "Good, MSVC 2022 is available. Let me check the deliverables directory and then create the game.",
+        "tool_calls": [
+          {
+            "id": "call_00_ZsaTYYm8SFHqNsqtEec94304",
+            "type": "function",
+            "function": {
+              "name": "list_directory",
+              "arguments": "{\"path\": \"deliverables\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": ".gitkeep",
+        "tool_call_id": "call_00_ZsaTYYm8SFHqNsqtEec94304"
+      }
+    ],
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read the contents of a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "description": "Write content to a file, creating it if it doesn't exist",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to write"
+              },
+              "content": {
+                "type": "string",
+                "description": "Content to write to the file"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "edit_file",
+          "description": "Edit a file by replacing old_text with new_text",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to edit"
+              },
+              "old_text": {
+                "type": "string",
+                "description": "The text to replace"
+              },
+              "new_text": {
+                "type": "string",
+                "description": "The text to replace with"
+              }
+            },
+            "required": [
+              "path",
+              "old_text",
+              "new_text"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_directory",
+          "description": "List the contents of a directory",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the directory to list"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "glob",
+          "description": "Find files matching a glob pattern",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "Glob pattern to match files against"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "search_code",
+          "description": "Search for a pattern in code files",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression pattern to search for"
+              },
+              "path": {
+                "type": "string",
+                "description": "Directory or file path to search in",
+                "default": "."
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "detect_build_toolchain",
+          "description": "Detect CMake, MSVC (vcvars), and other build tools. Call this before C++/CMake tasks on Windows instead of guessing paths.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "execute_command",
+          "description": "Execute a shell command and return exit_code, stdout, stderr. On Windows for MSVC/CMake builds set use_msvc_env=true to load vcvars64. Use detect_build_toolchain first to probe available compilers.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The shell command to execute"
+              },
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds (default: 120)",
+                "default": 120
+              },
+              "use_msvc_env": {
+                "type": "boolean",
+                "description": "Windows only: run command inside MSVC vcvars64 environment (required for cl, and often for cmake with MSVC generator)",
+                "default": false
+              }
+            },
+            "required": [
+              "command"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto"
+  }
+}
