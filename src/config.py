@@ -52,6 +52,8 @@ class PermissionConfig:
     auto_exec_readonly: bool = True
     confirm_write: bool = True
     confirm_shell: bool = True
+    shell_level: str = "auto_safe"       # ask_all | auto_safe | skip_all
+    shell_whitelist: list = field(default_factory=list)  # 命令名前缀白名单
 
 
 @dataclass
@@ -320,6 +322,8 @@ def _merge_configs(base: Config, override: Config) -> Config:
         auto_exec_readonly=override.permission.auto_exec_readonly,
         confirm_write=override.permission.confirm_write,
         confirm_shell=override.permission.confirm_shell,
+        shell_level=override.permission.shell_level,
+        shell_whitelist=override.permission.shell_whitelist,
     )
 
     merged_tui = TuiConfig(

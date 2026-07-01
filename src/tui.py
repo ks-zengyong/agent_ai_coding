@@ -68,7 +68,13 @@ class _Spinner:
 
 class PermissionDialog:
     @staticmethod
-    def ask(tool_name: str, arguments: dict) -> bool:
+    def ask(tool_name: str, arguments: dict, permission_guard: PermissionGuard | None = None) -> tuple[bool, str]:
+        """Show permission dialog with three options.
+
+        Returns (allowed, action) where action is 'deny', 'allow_once', or 'allow_whitelist'.
+        """
+        from src.permissions import PermissionDialogResult
+
         args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
         console.print()
         console.print(Panel(
@@ -78,12 +84,28 @@ class PermissionDialog:
             title="Permission Request",
             border_style="yellow",
         ))
+
+        # 对于 shell 命令，显示命令分类
+        command = arguments.get("command", "") if isinstance(arguments, dict) else ""
+        cmd_class = ""
+        if command and permission_guard:
+            cmd_class = permission_guard.classify_command(command)
+
+        extra_hint = ""
+        if cmd_class == "dangerous":
+            extra_hint = " [red](dangerous)[/red]"
+        elif cmd_class == "safe":
+            extra_hint = " [green](safe)[/green]"
+
         while True:
-            response = console.input("[yellow]Allow/Deny (a/d)? [/yellow]").strip().lower()
+            prompt = f"[yellow]Allow (a) / Allow + whitelist (w) / Deny (d)?{extra_hint} [/yellow]"
+            response = console.input(prompt).strip().lower()
             if response in ("a", "allow", "y", "yes"):
-                return True
+                return True, PermissionDialogResult.ALLOW_ONCE.value
+            if response in ("w", "wl", "whitelist"):
+                return True, PermissionDialogResult.ALLOW_AND_WHITELIST.value
             if response in ("d", "deny", "n", "no"):
-                return False
+                return False, PermissionDialogResult.DENY.value
 
 
 class TUICodingAgent:
@@ -174,8 +196,10 @@ class TUICodingAgent:
     def _print_status_footer(self) -> None:
         """输入框下方状态栏（Claude Code 风格）。"""
         left = self._status_footer_plain_text()
-        hint = "/help · /models · /status · /debug"
+        hint = "/help · /models · /perm · /exit"
+        more_hint = "more: /status /debug /expand /clear /load"
         console.print(f"  [dim]{left}[/dim]    [dim italic]{hint}[/dim italic]")
+        console.print(f"  [dim italic]{more_hint}[/dim italic]")
 
     def _print_input_bottom_with_status(self) -> None:
         self._print_input_rule()
@@ -189,6 +213,7 @@ class TUICodingAgent:
             console=console,
             width=self._terminal_width(),
             status_text=self._status_footer_plain_text,
+            hint="/help · /models · /perm · /exit  │ more: /status /debug /expand /clear /load",
         )
 
     async def _stop_spinner(self) -> None:
@@ -341,7 +366,9 @@ class TUICodingAgent:
         console.print("▸   /models  — List models or switch: /models <id|number>")
         console.print("▸   /status  — Show agent status")
         console.print("▸   /debug   — Toggle LLM request/response debug panels")
+        console.print("▸   /perm    — Permission settings: /perm, /perm shell <level>, /perm whitelist [add|del]")
         console.print("▸   /expand  — Expand collapsed results: /expand, /expand N, /expand thinking")
+        console.print("▸   /load    — Resume the most recent saved session")
         console.print("▸   /exit    — Exit the application")
         console.print()
         console.print("▸ [bold]Usage:[/bold] Type your natural language task and press Enter.")
@@ -391,6 +418,104 @@ class TUICodingAgent:
             )
         except ValueError as e:
             self.print_error(str(e))
+
+    def load_session(self) -> None:
+        """Load the most recent session from the history directory."""
+        import glob as glob_mod
+        from pathlib import Path
+
+        if not self.config or not self.config.history_dir:
+            self.print_error("No history directory configured.")
+            return
+
+        history_dir = self.config.history_dir
+        if not history_dir.exists():
+            self.print_error(f"History directory not found: {history_dir}")
+            return
+
+        session_files = sorted(
+            history_dir.glob("tui_*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not session_files:
+            self.print_error("No saved sessions found.")
+            return
+
+        latest = session_files[0]
+        try:
+            self.agent.session.load_from_file(str(latest))
+            self.agent.state = AgentState.IDLE
+            self.agent.loop_count = 0
+            self._collapsed_results = []
+            self._collapsed_thinking = []
+            msgs = len(self.agent.session.messages)
+            self.print_system(f"Resumed session from {latest.name} ({msgs} messages).")
+        except Exception as e:
+            self.print_error(f"Failed to load session: {e}")
+
+    def show_permissions(self, args: str = "") -> None:
+        """Show and manage permission settings."""
+        from src.permissions import ShellPermissionLevel
+
+        args = args.strip()
+
+        # /perm 不带参数 → 显示当前状态
+        if not args:
+            cfg = self.config.permission if self.config else None
+            guard = self.permission_guard
+            console.print("▸ [bold]Permission Settings[/bold]")
+            console.print(f"▸   auto_exec_readonly: {cfg.auto_exec_readonly if cfg else True}")
+            console.print(f"▸   confirm_write:     {cfg.confirm_write if cfg else True}")
+            console.print(f"▸   confirm_shell:     {cfg.confirm_shell if cfg else True}")
+            console.print(f"▸   shell_level:       {cfg.shell_level if cfg else 'auto_safe'}")
+            whitelist = sorted(guard._whitelist) if hasattr(guard, '_whitelist') else []
+            if whitelist:
+                console.print("▸   whitelist:")
+                for entry in whitelist:
+                    console.print(f"▸     - {entry}")
+            else:
+                console.print("▸   whitelist: (empty)")
+            console.print()
+            console.print("▸ [dim]Usage: /perm shell ask_all|auto_safe|skip_all[/dim]")
+            console.print("▸ [dim]      /perm whitelist[/dim]")
+            return
+
+        parts = args.split()
+        subcmd = parts[0].lower()
+
+        if subcmd == "shell" and len(parts) >= 2:
+            level = parts[1].lower()
+            if level not in ("ask_all", "auto_safe", "skip_all"):
+                self.print_error(f"Invalid shell level: {level}. Use ask_all, auto_safe, or skip_all.")
+                return
+            if self.config and hasattr(self.config, 'permission'):
+                self.config.permission.shell_level = level
+            self.print_system(f"Shell permission level set to: {level}")
+            return
+
+        if subcmd == "whitelist":
+            whitelist = sorted(self.permission_guard._whitelist) if hasattr(self.permission_guard, '_whitelist') else []
+            if not whitelist:
+                console.print("▸ [dim]Whitelist: (empty)[/dim]")
+            else:
+                console.print("▸ [bold]Whitelist:[/bold]")
+                for entry in whitelist:
+                    console.print(f"▸   - {entry}")
+            if len(parts) >= 3:
+                op = parts[1].lower()
+                cmd = " ".join(parts[2:])
+                if op == "add":
+                    self.permission_guard.add_to_whitelist(cmd)
+                    self.print_system(f"Added to whitelist: {cmd}")
+                elif op == "del" or op == "remove":
+                    self.permission_guard._whitelist.discard(cmd.strip().lower())
+                    self.print_system(f"Removed from whitelist: {cmd}")
+                else:
+                    self.print_error(f"Unknown whitelist operation: {op}. Use add or del.")
+            return
+
+        self.print_error(f"Unknown /perm subcommand: {subcmd}. See /help for usage.")
 
     def handle_models_command(self, user_input: str) -> None:
         parts = user_input.split(maxsplit=1)
@@ -511,19 +636,34 @@ class TUICodingAgent:
 
                 if self.agent.state == AgentState.AWAITING_PERMISSION:
                     if self.agent.pending_tool_call:
-                        allowed = PermissionDialog.ask(
-                            self.agent.pending_tool_call.name,
-                            self.agent.pending_tool_call.arguments,
-                        )
-                        if allowed:
-                            self.agent.state = AgentState.EXECUTING
-                        else:
-                            self.agent.handle_permission_denied(self.agent.pending_tool_call)
-                            self._clear_status_line()
-                            console.print(
-                                f"  ✗ [dim]Permission denied: "
-                                f"{self.agent.pending_tool_call.name}[/dim]"
+                        tc = self.agent.pending_tool_call
+                        # 提取命令参数（用于 shell 命令分类和 whitelist）
+                        command_arg = tc.arguments.get("command", "") if tc.arguments else ""
+
+                        if self.permission_guard.needs_permission(tc.name, command_arg):
+                            allowed, action = PermissionDialog.ask(
+                                tc.name, tc.arguments, self.permission_guard
                             )
+                            if allowed:
+                                self.agent.state = AgentState.EXECUTING
+                                if action == "allow_whitelist" and command_arg:
+                                    # 提取命令前缀加入白名单
+                                    prefix = command_arg.strip().split()[0] if command_arg.strip() else ""
+                                    if prefix:
+                                        self.permission_guard.add_to_whitelist(prefix)
+                                        console.print(
+                                            f"  ● [dim]Whitelisted: {prefix}... (auto-approved next time)[/dim]"
+                                        )
+                            else:
+                                self.agent.handle_permission_denied(tc)
+                                self._clear_status_line()
+                                console.print(
+                                    f"  ✗ [dim]Permission denied: "
+                                    f"{tc.name}[/dim]"
+                                )
+                        else:
+                            # Config says auto-approve this type — skip dialog
+                            self.agent.state = AgentState.EXECUTING
                     continue
 
                 if self.agent.state in (AgentState.DONE, AgentState.ERROR):
@@ -596,6 +736,7 @@ class TUICodingAgent:
             ("Tips for getting started", ""),
             ("/help", "Show all commands"),
             ("/models", "Switch models"),
+            ("/perm", "Permission settings"),
             ("/debug", "Toggle debug panels"),
             ("/clear", "Clear conversation"),
             ("/status", "Show agent status"),
@@ -692,6 +833,11 @@ class TUICodingAgent:
                 elif cmd == "/expand":
                     parts = user_input.split(maxsplit=1)
                     self.show_expand(parts[1] if len(parts) > 1 else "")
+                elif cmd == "/load":
+                    self.load_session()
+                elif cmd == "/perm":
+                    parts = user_input.split(maxsplit=2)
+                    self.show_permissions(parts[1] if len(parts) > 1 else "")
                 elif cmd == "/exit":
                     self.print_system("Goodbye!")
                     self.running = False

@@ -19,7 +19,7 @@
 - Enter 换行 → 自定义 Enter 绑定了 insert newline
 - 状态栏消失 → 改用 Rich input 后 footer 只在提交后打印
 - 回复 ``│`` 前大量空格 → prompt 结束后 stdout 光标仍在行中；需换行复位
-- 光标不闪 → 仅软件 ``│`` 闪烁；输入态隐藏硬件光标（避免双线）
+- 光标 → 使用系统原生 BLINKING_BEAM（闪烁竖线），不使用软件模拟
 """
 from __future__ import annotations
 
@@ -30,8 +30,6 @@ from typing import Callable, Protocol
 
 _HRULE = "─"
 DOUBLE_CTRL_C_SECONDS = 0.75
-_CURSOR_BLINK_INTERVAL = 0.5
-_CURSOR_BEAM = "│"  # 竖线光标（空位/行尾）
 
 
 class InputExitRequested(Exception):
@@ -78,10 +76,6 @@ def _input_style():
         "hrule": "bg:default fg:ansibrightblack noreverse",
         "footer": "bg:default fg:ansibrightblack noreverse",
         "hint": "bg:default fg:ansibrightblack italic noreverse",
-        # 竖线光标：仅颜色，禁止 underline（会在 │ 底部出现短横线）
-        "cursor-blink": "fg:ansicyan bold nounderline",
-        "cursor-column": "fg:ansicyan nounderline",
-        "cursor-line": "nounderline",
     })
 
 
@@ -112,32 +106,35 @@ def _configure_console_cursor(*, visible: bool) -> None:
         pass
 
 
-class _BlinkCursorProcessor:
-    """Software beam cursor: │ 或高亮字符（~500ms 闪烁，无下划线）。"""
+def _create_blinking_cursor_output():
+    """Create an output with hide_cursor/show_cursor as no-ops.
 
-    def apply_transformation(self, ti):
-        from prompt_toolkit.application.current import get_app
-        from prompt_toolkit.layout.processors import Transformation, explode_text_fragments
+    prompt_toolkit's renderer calls hide_cursor() then show_cursor() on every
+    frame. show_cursor() sends \\x1b[?12l (stop blink) + \\x1b[?25h (show),
+    which kills cursor blinking. By making both no-ops, the terminal manages
+    cursor visibility and blinking entirely via the BLINKING_BEAM (\\x1b[5 q)
+    escape sequence sent once by set_cursor_shape().
 
-        app = get_app()
-        if app.is_done:
-            return Transformation(ti.fragments)
+    Works on both Vt100_Output (Linux/macOS) and Windows10_Output (Windows 10+).
+    Windows10_Output delegates to an inner Vt100_Output via __getattr__, but
+    instance attributes take priority over __getattr__ so the override works.
+    """
+    from prompt_toolkit.output import create_output
 
-        document = ti.document
-        if document.cursor_position_row != ti.lineno:
-            return Transformation(ti.fragments)
+    try:
+        output = create_output()
+    except Exception:
+        return None
 
-        if app.render_counter % 2 != 0:
-            return Transformation(ti.fragments)
-
-        col = ti.source_to_display(document.cursor_position_col)
-        fragments = explode_text_fragments(ti.fragments)
-        if col >= len(fragments):
-            fragments.append(("class:cursor-blink", _CURSOR_BEAM))
-        else:
-            style, text, *rest = fragments[col]
-            fragments[col] = (style + " class:cursor-blink", text or _CURSOR_BEAM, *rest)
-        return Transformation(fragments)
+    # No-op both: let terminal handle cursor visibility & blinking natively.
+    # This works for Vt100_Output directly, and for Windows10_Output via
+    # __getattr__ delegation (instance attrs override __getattr__).
+    try:
+        output.hide_cursor = lambda: None
+        output.show_cursor = lambda: None
+    except (AttributeError, TypeError):
+        pass  # read-only attr on some output types — skip override
+    return output
 
 
 def _reset_stdout_cursor() -> None:
@@ -211,7 +208,6 @@ def _build_framed_input_layout(
     buffer_control = BufferControl(
         buffer=buffer,
         focusable=True,
-        input_processors=[_BlinkCursorProcessor()],
     )
 
     def top_line() -> FormattedText:
@@ -255,7 +251,7 @@ def _build_framed_input_layout(
                 dont_extend_height=True,
                 get_line_prefix=_line_prefix,
                 wrap_lines=True,
-                always_hide_cursor=True,
+                always_hide_cursor=False,
             ),
             Window(
                 FormattedTextControl(footer_lines),
@@ -295,28 +291,30 @@ async def _read_framed_input_ptk(
 
     buffer.on_text_changed += _reflow
 
-    app = Application(
+    # Custom output: override show_cursor to not send \x1b[?12l (stop blink)
+    custom_output = _create_blinking_cursor_output()
+
+    app_kwargs = dict(
         layout=layout,
         key_bindings=_build_accept_key_bindings(buffer, tracker),
         style=_input_style(),
         include_default_pygments_style=False,
-        refresh_interval=_CURSOR_BLINK_INTERVAL,
         full_screen=False,
         erase_when_done=True,
-        cursor=SimpleCursorShapeConfig(CursorShape._NEVER_CHANGE),
+        cursor=SimpleCursorShapeConfig(CursorShape.BLINKING_BEAM),
     )
+    if custom_output is not None:
+        app_kwargs["output"] = custom_output
 
-    def _pre_run() -> None:
-        _configure_console_cursor(visible=False)
+    app = Application(**app_kwargs)
 
     with patch_stdout():
         try:
-            result = await app.run_async(pre_run=_pre_run)
+            result = await app.run_async()
         except InputExitRequested:
             _reset_stdout_cursor()
             raise
         finally:
-            _configure_console_cursor(visible=True)
             _reset_stdout_cursor()
     return result if result is not None else ""
 
@@ -349,7 +347,7 @@ async def read_framed_input(
     console: _ConsoleLike,
     width: int,
     status_text: Callable[[], str],
-    hint: str = "/help · /models · /status · /debug",
+    hint: str = "/help · /models · /perm · /exit  │ more: /status /debug /expand /clear /load",
 ) -> str:
     """Read framed input. Prefer compact prompt_toolkit layout; fallback to Rich."""
     if framed_input_available():

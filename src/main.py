@@ -98,7 +98,7 @@ def main() -> None:
         print(f"API URL: {active.api_url}")
         print(f"API key: {mask_api_key(active.api_key)}")
 
-    permission_guard = PermissionGuard()
+    permission_guard = PermissionGuard(config.permission)
 
     agent = CodingAgent(
         provider=provider,

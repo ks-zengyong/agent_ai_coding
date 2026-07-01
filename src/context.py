@@ -108,20 +108,45 @@ class Session:
         return result
 
     def compress(self, max_tokens: int) -> None:
+        """Compress session context to fit within max_tokens.
+
+        Strategy:
+        1. Always preserve the first message (usually a system prompt).
+        2. Always preserve the last user request intact.
+        3. For tool results in the middle, truncate to first 200 chars.
+        4. If still over limit, keep first message + last user msg + last N messages.
+        """
         if len(self.messages) <= 2:
             return
-        system_msg = None
-        other_msgs = []
+
+        # Step 1: Truncate long tool results first
+        self._truncate_tool_results()
+
+        # Step 2: Estimate tokens and drop middle messages if needed
+        estimated_tokens = sum(len(m.content) // 4 for m in self.messages)
+        while estimated_tokens > max_tokens and len(self.messages) > 3:
+            # Remove the second message (index 1) — keeps first + last N
+            self.messages.pop(1)
+            estimated_tokens = sum(len(m.content) // 4 for m in self.messages)
+
+    def _truncate_tool_results(self) -> None:
+        """Truncate long tool result content to reduce token usage.
+
+        Keeps first 200 characters of each tool result.
+        """
         for msg in self.messages:
-            if msg.type == MessageType.USER and other_msgs == [] and system_msg is None:
-                system_msg = msg
-            else:
-                other_msgs.append(msg)
-        estimated_tokens = sum(len(m.content) // 4 for m in other_msgs)
-        while estimated_tokens > max_tokens and len(other_msgs) > 2:
-            removed = other_msgs.pop(0)
-            estimated_tokens -= len(removed.content) // 4
-        self.messages = ([system_msg] if system_msg else []) + other_msgs
+            if msg.type == MessageType.TOOL_RESULT and len(msg.content) > 400:
+                lines = msg.content.split("\n")
+                preview_lines = []
+                char_count = 0
+                for line in lines:
+                    if char_count + len(line) > 200:
+                        remaining = len(msg.content) - char_count
+                        preview_lines.append(f"... [+{remaining} more chars]")
+                        break
+                    preview_lines.append(line)
+                    char_count += len(line) + 1
+                msg.content = "\n".join(preview_lines)
 
     def save_to_file(self, path: str) -> None:
         data = {"messages": [m.to_dict() for m in self.messages]}

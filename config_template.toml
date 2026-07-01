@@ -94,4 +94,10 @@ api_url = "http://localhost:8080"
 [permission]
 auto_exec_readonly = true   # 只读工具是否自动执行
 confirm_write = true        # write_file / edit_file 是否需确认
-confirm_shell = true        # execute_command 是否需确认
+confirm_shell = true        # execute_command 是否需确认（false = 所有命令自动通过）
+shell_level = "auto_safe"   # ask_all | auto_safe | skip_all
+                            # ask_all: 所有 shell 命令都询问
+                            # auto_safe: 安全命令自动通过（编译/测试/浏览），写入/危险命令询问
+                            # skip_all: 所有命令自动通过（含删除、格式化等危险命令）
+shell_whitelist = []        # 命令前缀白名单，匹配的自动通过（运行时也可通过 w 键添加）
+                            # 示例: ["pytest", "cmake", "git status", "npm install"]

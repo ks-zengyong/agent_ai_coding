@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
-from typing import Dict
+from typing import Dict, List, Optional, Set
+
+from src.config import PermissionConfig
 
 
 class PermissionType(Enum):
@@ -10,8 +13,94 @@ class PermissionType(Enum):
     SHELL = "shell"
 
 
+class ShellPermissionLevel(str, Enum):
+    ASK_ALL = "ask_all"          # 所有 shell 命令都询问
+    AUTO_SAFE = "auto_safe"      # 安全命令自动通过，危险命令询问
+    SKIP_ALL = "skip_all"        # 所有命令自动通过（含危险命令）
+
+
+# 安全命令前缀列表 — 匹配命令开头即可
+SAFE_COMMAND_PREFIXES = [
+    # 编译/构建
+    "cmake", "make ", "ninja", "msbuild", "gcc", "g++", "clang", "cl ",
+    "cargo ", "go ", "dotnet ",
+    # 测试
+    "pytest", "python -m pytest", "npm test", "npm run test",
+    "mvn ", "gradle", "sbt ",
+    # 浏览/读取
+    "ls ", "dir ", "cat ", "type ", "tree ", "find ", "grep ", "rg ", "where ",
+    "which ", "echo ", "pwd ", "cd ", "more ", "head ", "tail ",
+    # 只读 git
+    "git status", "git log", "git diff", "git branch", "git remote",
+    "git show", "git blame", "git describe",
+    # 包管理（只读/安装模式）
+    "pip list", "pip show", "npm list", "npm ls",
+]
+# 写文件命令前缀
+WRITE_COMMAND_PREFIXES = [
+    "echo >", "echo >>", "cat >", "cat >>",
+    "copy ", "cp ", "xcopy ",
+    "write_file", "edit_file",
+]
+# 危险命令模式
+DANGEROUS_PATTERNS = [
+    r"rm\s+-rf?\s+/",
+    r"rm\s+-rf?\s+~",
+    r"rm\s+-rf?\s+\*",
+    r"del\s+/[fsq].*\.",
+    r"rd\s+/[fsq]",
+    r"mkfs",
+    r"dd\s+if=",
+    r":\(\)\{ :\|:& \};:",
+    r"chmod\s+-R\s+777\s+/",
+    r"chown\s+-R\s+",
+    r">\s*/dev/sda",
+    r"mv\s+.*\s+/dev/null",
+    r"wget\s+.*\s+\|\s*bash",
+    r"curl\s+.*\s+\|\s*bash",
+    r"git push --force",
+    r"git reset --hard",
+    r"git clean -[fdx]",
+]
+
+
+def classify_shell_command(command: str) -> str:
+    """Classify a shell command into 'safe', 'write', or 'dangerous'.
+
+    'safe' — 只读/测试/编译等安全操作
+    'write' — 写入文件但非破坏性
+    'dangerous' — 可能造成破坏的操作
+    """
+    command_stripped = command.strip()
+
+    # 先检查危险模式
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, command_stripped, re.IGNORECASE):
+            return "dangerous"
+
+    # 再检查写文件前缀
+    for prefix in WRITE_COMMAND_PREFIXES:
+        if command_stripped.startswith(prefix):
+            return "write"
+
+    # 最后检查安全前缀
+    for prefix in SAFE_COMMAND_PREFIXES:
+        if command_stripped.startswith(prefix):
+            return "safe"
+
+    # 默认：未知命令按 write 级别处理（需要确认）
+    return "write"
+
+
+class PermissionDialogResult(Enum):
+    DENY = "deny"
+    ALLOW_ONCE = "allow_once"
+    ALLOW_AND_WHITELIST = "allow_and_whitelist"
+
+
 class PermissionGuard:
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[PermissionConfig] = None) -> None:
+        self._config = config or PermissionConfig()
         self._tool_permissions: Dict[str, PermissionType] = {
             "read_file": PermissionType.READ_ONLY,
             "list_directory": PermissionType.READ_ONLY,
@@ -22,6 +111,11 @@ class PermissionGuard:
             "edit_file": PermissionType.WRITE,
             "execute_command": PermissionType.SHELL,
         }
+        # 动态白名单（运行中添加）
+        self._whitelist: Set[str] = set()
+        # 从配置加载预设白名单
+        for entry in self._config.shell_whitelist:
+            self._whitelist.add(entry.strip().lower())
 
     def register_tool(self, tool_name: str, permission_type: PermissionType) -> None:
         self._tool_permissions[tool_name] = permission_type
@@ -36,3 +130,55 @@ class PermissionGuard:
     def has_permission(self, tool_name: str, required: PermissionType) -> bool:
         perm = self._tool_permissions.get(tool_name)
         return perm == required
+
+    def add_to_whitelist(self, command: str) -> None:
+        """Add a command prefix to the runtime whitelist."""
+        self._whitelist.add(command.strip().lower())
+
+    def is_whitelisted(self, command: str) -> bool:
+        """Check if a command matches any whitelist entry (prefix match)."""
+        cmd_lower = command.strip().lower()
+        for entry in self._whitelist:
+            if cmd_lower.startswith(entry):
+                return True
+        return False
+
+    def classify_command(self, command: str) -> str:
+        """Classify a shell command string into 'safe', 'write', or 'dangerous'."""
+        return classify_shell_command(command)
+
+    def needs_permission(self, tool_name: str, command: str = "") -> bool:
+        """Check whether the tool requires user confirmation based on config.
+
+        For SHELL tools, also checks shell_level and command classification.
+        Returns True if the tool should prompt the user, False if it can auto-execute.
+        """
+        perm = self._tool_permissions.get(tool_name)
+        if perm is None:
+            return True  # unknown tools always require confirmation
+
+        if perm == PermissionType.READ_ONLY:
+            return not self._config.auto_exec_readonly
+
+        if perm == PermissionType.WRITE:
+            return self._config.confirm_write
+
+        if perm == PermissionType.SHELL:
+            # 检查白名单
+            if command and self.is_whitelisted(command):
+                return False
+
+            if not self._config.confirm_shell:
+                return False
+
+            level = self._config.shell_level
+            if level == "skip_all":
+                return False
+            if level == "auto_safe" and command:
+                cmd_class = self.classify_command(command)
+                if cmd_class == "safe":
+                    return False
+            # ask_all 或 auto_safe 下的 write/dangerous → 需要询问
+            return True
+
+        return True
