@@ -199,6 +199,38 @@ def _reset_stdout_cursor() -> None:
     sys.stdout.flush()
 
 
+def _delete_input_frame_lines(num_lines: int) -> None:
+    """Delete the blank lines left behind by erase_when_done after the input
+    frame is dismissed.
+
+    ``erase_when_done=True`` causes prompt_toolkit to call ``renderer.erase()``
+    on exit, which moves the cursor back to the top of the input frame and
+    runs ``erase_down()`` (``\\x1b[J``). ``erase_down`` clears the *content*
+    of the frame's rows but does **not** remove the rows themselves — they
+    remain as blank lines. With a 4-row frame (hrule + input + hrule +
+    status) this leaves up to 4 blank lines between turns, and more when the
+    input soft-wraps.
+
+    After ``erase()``, the cursor sits at column 0 of the frame's top row.
+    We emit ``\\x1b[{n}M`` (Delete Lines) to actually remove those ``n``
+    rows so that content below shifts up, collapsing the gap. The cursor
+    stays at the same screen position, which is now the line immediately
+    following the previous turn's output — exactly where the next turn
+    should begin.
+
+    On terminals without VT100 support (old Windows consoles without
+    ``ENABLE_VIRTUAL_TERMINAL_PROCESSING``) the escape sequence is ignored
+    and we fall back to the single newline written by
+    ``_reset_stdout_cursor``.
+    """
+    if num_lines <= 0:
+        return
+    # Clamp to a sane upper bound to avoid pathological values.
+    n = max(1, min(num_lines, 200))
+    sys.stdout.write(f"\x1b[{n}M")
+    sys.stdout.flush()
+
+
 def _build_accept_key_bindings(buffer, tracker: _CtrlCTracker):
     """Enter 发送；Ctrl+C 一次清空、连续两次退出。"""
     from prompt_toolkit.enums import DEFAULT_BUFFER
@@ -396,6 +428,10 @@ async def _read_framed_input_ptk(
 
     app = Application(**app_kwargs)
 
+    # Capture the rendered frame height so we can delete the blank rows left
+    # by erase_when_done after the app exits. We read it from the renderer's
+    # last screen; if unavailable we fall back to 0 (no deletion).
+    frame_height = 0
     with patch_stdout():
         try:
             result = await app.run_async()
@@ -403,7 +439,20 @@ async def _read_framed_input_ptk(
             _reset_stdout_cursor()
             raise
         finally:
-            _reset_stdout_cursor()
+            try:
+                last_screen = app.renderer.last_rendered_screen
+                if last_screen is not None:
+                    frame_height = last_screen.height
+            except Exception:
+                frame_height = 0
+            # erase_when_done already moved the cursor to the top of the
+            # frame and cleared the frame's content (but not the rows).
+            # Delete those now-blank rows so no gap remains between turns.
+            if frame_height > 0:
+                _delete_input_frame_lines(frame_height)
+            else:
+                # Fallback: ensure cursor is on a fresh line.
+                _reset_stdout_cursor()
     return result if result is not None else ""
 
 

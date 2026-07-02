@@ -111,11 +111,13 @@ class PermissionGuard:
             "edit_file": PermissionType.WRITE,
             "execute_command": PermissionType.SHELL,
         }
-        # 动态白名单（运行中添加）
-        self._whitelist: Set[str] = set()
-        # 从配置加载预设白名单
+        # 全局白名单（来自 config，持久生效，跨 session 共享）
+        self._global_whitelist: Set[str] = set()
         for entry in self._config.shell_whitelist:
-            self._whitelist.add(entry.strip().lower())
+            self._global_whitelist.add(entry.strip().lower())
+        # 会话级白名单（当前对话 session 中用户同意过的命令，会话结束清除）
+        # 用于记忆历史同意，避免同一 session 内重复询问相同命令
+        self._session_whitelist: Set[str] = set()
 
     def register_tool(self, tool_name: str, permission_type: PermissionType) -> None:
         self._tool_permissions[tool_name] = permission_type
@@ -131,14 +133,105 @@ class PermissionGuard:
         perm = self._tool_permissions.get(tool_name)
         return perm == required
 
+    @staticmethod
+    def extract_command_signature(command: str) -> str:
+        """提取命令的"签名"用于白名单匹配。
+
+        相比只取第一个 token，这里提取更合理的前缀：
+        - ``git push origin main`` → ``git push``（保留子命令）
+        - ``npm run build`` → ``npm run``
+        - ``python -m pytest tests/`` → ``python -m pytest``
+        - ``cmake -B build`` → ``cmake``（无子命令时只取程序名）
+        - ``echo hello`` → ``echo``
+
+        这样 ``git push`` 加入白名单后，不会让 ``git reset --hard`` 自动通过。
+        """
+        command_stripped = command.strip()
+        if not command_stripped:
+            return ""
+        # 标准化空白
+        tokens = command_stripped.split()
+        if not tokens:
+            return ""
+
+        program = tokens[0].lower()
+
+        # 带子命令的程序：保留子命令以避免过度授权
+        # 例如 git push 不应让 git reset --hard 自动通过
+        subcommand_programs = {
+            "git", "npm", "docker", "kubectl", "pip", "cargo",
+            "go", "dotnet", "mvn", "gradle", "az", "aws", "gcloud",
+        }
+        if program in subcommand_programs and len(tokens) >= 2:
+            sub = tokens[1].lower()
+            # 跳过选项（以 - 开头），只保留真正的子命令
+            if not sub.startswith("-"):
+                return f"{program} {sub}"
+
+        # python -m pytest → python -m pytest（保留 -m 后的模块名）
+        if program in ("python", "python3", "py") and len(tokens) >= 3:
+            if tokens[1] == "-m":
+                return f"{program} -m {tokens[2].lower()}"
+
+        return program
+
     def add_to_whitelist(self, command: str) -> None:
-        """Add a command prefix to the runtime whitelist."""
-        self._whitelist.add(command.strip().lower())
+        """Add a command to the global whitelist (persists across sessions).
+
+        Deprecated for runtime user approvals — prefer
+        :meth:`add_to_session_whitelist` which scopes approvals to the
+        current conversation session.
+        """
+        signature = self.extract_command_signature(command)
+        if signature:
+            self._global_whitelist.add(signature)
+
+    def add_to_session_whitelist(self, command: str) -> str:
+        """Add a command to the session-level whitelist.
+
+        Records the user's approval for the current conversation session so
+        that subsequent identical commands do not prompt again. The approval
+        is scoped to the command signature (e.g. ``git push``) rather than
+        just the program name, preventing over-broad auto-approval.
+
+        Returns the signature that was added (empty string if nothing added).
+        """
+        signature = self.extract_command_signature(command)
+        if signature:
+            self._session_whitelist.add(signature)
+        return signature
+
+    def clear_session_whitelist(self) -> None:
+        """Clear all session-level approvals (e.g. on /clear or new session)."""
+        self._session_whitelist.clear()
+
+    def get_global_whitelist(self) -> Set[str]:
+        """Return a copy of the global (config-persisted) whitelist."""
+        return set(self._global_whitelist)
+
+    def get_session_whitelist(self) -> Set[str]:
+        """Return a copy of the session-level whitelist."""
+        return set(self._session_whitelist)
 
     def is_whitelisted(self, command: str) -> bool:
-        """Check if a command matches any whitelist entry (prefix match)."""
+        """Check if a command matches any whitelist entry (prefix match).
+
+        Checks both the global whitelist (from config) and the session
+        whitelist (approvals from the current conversation). Matching uses
+        the command signature so that ``git push`` in the whitelist does
+        not auto-approve ``git reset --hard``.
+        """
+        signature = self.extract_command_signature(command)
+        if not signature:
+            return False
+        # 精确匹配签名（签名本身已是合理前缀，无需再做 startswith）
+        if signature in self._global_whitelist:
+            return True
+        if signature in self._session_whitelist:
+            return True
+        # 兼容：旧式全局白名单条目可能存储为任意前缀，做一次 prefix 兜底
         cmd_lower = command.strip().lower()
-        for entry in self._whitelist:
+        for entry in self._global_whitelist:
             if cmd_lower.startswith(entry):
                 return True
         return False

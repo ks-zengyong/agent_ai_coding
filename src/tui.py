@@ -431,7 +431,7 @@ class TUICodingAgent:
         console.print("▸   /models  — List models or switch: /models <id|number>")
         console.print("▸   /status  — Show agent status")
         console.print("▸   /debug   — Toggle LLM request/response debug panels")
-        console.print("▸   /perm    — Permission settings: /perm, /perm shell <level>, /perm whitelist [add|del]")
+        console.print("▸   /perm    — Permission settings: /perm, /perm shell <level>, /perm whitelist [add|del|clear-session]")
         console.print("▸   /expand  — Expand collapsed results: /expand, /expand N, /expand thinking")
         console.print("▸   /load    — Resume the most recent saved session")
         console.print("▸   /exit    — Exit the application")
@@ -534,16 +534,24 @@ class TUICodingAgent:
             console.print(f"▸   confirm_write:     {cfg.confirm_write if cfg else True}")
             console.print(f"▸   confirm_shell:     {cfg.confirm_shell if cfg else True}")
             console.print(f"▸   shell_level:       {cfg.shell_level if cfg else 'auto_safe'}")
-            whitelist = sorted(guard._whitelist) if hasattr(guard, '_whitelist') else []
-            if whitelist:
-                console.print("▸   whitelist:")
-                for entry in whitelist:
+            global_wl = sorted(guard.get_global_whitelist())
+            session_wl = sorted(guard.get_session_whitelist())
+            if global_wl:
+                console.print("▸   global whitelist (from config, persistent):")
+                for entry in global_wl:
                     console.print(f"▸     - {entry}")
             else:
-                console.print("▸   whitelist: (empty)")
+                console.print("▸   global whitelist: (empty)")
+            if session_wl:
+                console.print("▸   session whitelist (this conversation only):")
+                for entry in session_wl:
+                    console.print(f"▸     - {entry}")
+            else:
+                console.print("▸   session whitelist: (empty)")
             console.print()
             console.print("▸ [dim]Usage: /perm shell ask_all|auto_safe|skip_all[/dim]")
-            console.print("▸ [dim]      /perm whitelist[/dim]")
+            console.print("▸ [dim]      /perm whitelist [add|del] <cmd>[/dim]")
+            console.print("▸ [dim]      /perm whitelist clear-session[/dim]")
             return
 
         parts = args.split()
@@ -560,24 +568,41 @@ class TUICodingAgent:
             return
 
         if subcmd == "whitelist":
-            whitelist = sorted(self.permission_guard._whitelist) if hasattr(self.permission_guard, '_whitelist') else []
-            if not whitelist:
+            global_wl = sorted(self.permission_guard.get_global_whitelist())
+            session_wl = sorted(self.permission_guard.get_session_whitelist())
+            if not global_wl and not session_wl:
                 console.print("▸ [dim]Whitelist: (empty)[/dim]")
             else:
-                console.print("▸ [bold]Whitelist:[/bold]")
-                for entry in whitelist:
-                    console.print(f"▸   - {entry}")
+                if global_wl:
+                    console.print("▸ [bold]Global whitelist (persistent):[/bold]")
+                    for entry in global_wl:
+                        console.print(f"▸   - {entry}")
+                if session_wl:
+                    console.print("▸ [bold]Session whitelist (this conversation):[/bold]")
+                    for entry in session_wl:
+                        console.print(f"▸   - {entry}")
             if len(parts) >= 3:
                 op = parts[1].lower()
                 cmd = " ".join(parts[2:])
                 if op == "add":
+                    # /perm whitelist add 加入全局白名单（持久）
                     self.permission_guard.add_to_whitelist(cmd)
-                    self.print_system(f"Added to whitelist: {cmd}")
+                    signature = self.permission_guard.extract_command_signature(cmd)
+                    self.print_system(f"Added to global whitelist: {signature or cmd}")
                 elif op == "del" or op == "remove":
-                    self.permission_guard._whitelist.discard(cmd.strip().lower())
-                    self.print_system(f"Removed from whitelist: {cmd}")
+                    signature = self.permission_guard.extract_command_signature(cmd)
+                    # 直接操作内部集合（全局白名单删除）
+                    self.permission_guard._global_whitelist.discard(signature)
+                    self.permission_guard._global_whitelist.discard(cmd.strip().lower())
+                    self.print_system(f"Removed from global whitelist: {signature or cmd}")
+                elif op == "clear-session":
+                    self.permission_guard.clear_session_whitelist()
+                    self.print_system("Session whitelist cleared.")
                 else:
-                    self.print_error(f"Unknown whitelist operation: {op}. Use add or del.")
+                    self.print_error(f"Unknown whitelist operation: {op}. Use add, del, or clear-session.")
+            elif len(parts) == 2 and parts[1].lower() == "clear-session":
+                self.permission_guard.clear_session_whitelist()
+                self.print_system("Session whitelist cleared.")
             return
 
         self.print_error(f"Unknown /perm subcommand: {subcmd}. See /help for usage.")
@@ -593,15 +618,90 @@ class TUICodingAgent:
         self.agent.loop_count = 0
         self._collapsed_results = []
         self._collapsed_thinking = []
-        self.print_system("Conversation cleared.")
+        # 清除会话级白名单：新对话不应继承上一轮的命令授权
+        self.permission_guard.clear_session_whitelist()
+        self.print_system("Conversation cleared (session whitelist also cleared).")
 
     async def _run_thinking_stream(self) -> None:
-        """Consume step_stream with thinking spinner, tool cards, and text streaming."""
+        """Consume step_stream with thinking spinner, tool cards, and text streaming.
+
+        Streamed text is buffered and flushed line-by-line. Consecutive blank
+        lines are collapsed to a single blank line, and leading whitespace on
+        each line is trimmed so the streamed output never shows large gaps or
+        deeply-indented lines.
+        """
         start_time = time.time()
         is_first_output = True
         is_first_text = True
         accumulated_text = ""
         accumulated_thinking = ""
+
+        # Streaming text buffer: we accumulate deltas and flush complete lines
+        # (delimited by \n). This lets us collapse blank lines and trim leading
+        # whitespace before printing, while still feeling live.
+        stream_buffer = ""
+        prev_printed_blank = False  # track whether the last flushed line was blank
+
+        async def _flush_stream_buffer(final: bool = False) -> None:
+            """Flush complete lines from stream_buffer; collapse blanks & trim.
+
+            When final=True, also flush any trailing partial line. Trailing
+            blank lines are never printed so the streamed block doesn't end
+            with a stack of empty rows (the caller adds a single newline).
+
+            When final=False, trailing blank lines are deferred (held back in
+            stream_buffer) rather than printed eagerly. This prevents a blank
+            line from being emitted just before DONE arrives — it will either
+            be printed later (when more non-blank content follows) or dropped
+            (when final=True runs and strips trailing blanks).
+            """
+            nonlocal stream_buffer, prev_printed_blank
+            if not stream_buffer:
+                return
+            # Split into lines; keep the last element as the pending partial
+            # line unless final=True.
+            parts = stream_buffer.split("\n")
+            if final:
+                lines = parts
+                stream_buffer = ""
+                # Drop trailing empty lines so the streamed block never ends
+                # with blank rows (the caller prints a single newline after).
+                while lines and lines[-1].strip() == "":
+                    lines.pop()
+            else:
+                lines = parts[:-1]
+                stream_buffer = parts[-1]
+                # Defer trailing blank lines: if the last complete line(s) are
+                # blank, move them back into stream_buffer so they aren't
+                # printed yet. They'll be emitted when non-blank content
+                # follows, or dropped by final=True if the stream ends here.
+                # We keep at most one deferred blank (collapse runs of blanks).
+                while len(lines) >= 1 and lines[-1].strip() == "":
+                    # Only defer if there's something before it (otherwise the
+                    # blank is the very first output and deferring is moot).
+                    if len(lines) == 1 and not prev_printed_blank:
+                        # Single blank line with nothing before — defer it.
+                        stream_buffer = "\n" + stream_buffer
+                        lines.pop()
+                    elif len(lines) >= 2:
+                        # Collapse multiple trailing blanks to one deferred.
+                        stream_buffer = "\n" + stream_buffer
+                        lines.pop()
+                        # Keep popping additional trailing blanks (collapse).
+                        while len(lines) >= 1 and lines[-1].strip() == "":
+                            lines.pop()
+                    else:
+                        break
+            for raw_line in lines:
+                # Trim trailing whitespace; trim leading whitespace to avoid
+                # deeply-indented streamed lines.
+                line = raw_line.strip()
+                is_blank = line == ""
+                if is_blank and prev_printed_blank:
+                    # Collapse consecutive blank lines into one.
+                    continue
+                console.print(line, style="cyan", highlight=False)
+                prev_printed_blank = is_blank
 
         await self._spinner.start("Thinking…")
 
@@ -627,11 +727,11 @@ class TUICodingAgent:
                         # Single blank line before streamed text — exactly one,
                         # never stacked (previous block already ended with \n).
                         console.print(highlight=False)
-                        console.print("│ ", end="", style="cyan", highlight=False)
                         is_first_text = False
-                    # Buffer: flush on newline or when buffer reaches ~120 chars
-                    # This creates a natural rhythm instead of char-by-char
-                    console.print(event.text, end="", style="cyan", highlight=False)
+                        prev_printed_blank = False
+                    # Accumulate into the buffer and flush complete lines.
+                    stream_buffer += event.text
+                    await _flush_stream_buffer(final=False)
 
                 elif event.type == StreamEventType.TOOL_USE and event.tool_call:
                     self._clear_status_line()
@@ -639,8 +739,9 @@ class TUICodingAgent:
 
                 elif event.type == StreamEventType.DONE:
                     elapsed = time.time() - start_time
-                    # End the streamed text line with exactly one newline.
+                    # Flush any remaining partial line in the stream buffer.
                     if not is_first_text:
+                        await _flush_stream_buffer(final=True)
                         console.print()
                     # Print thinking / responded meta. When both thinking and
                     # text exist, the meta sits between the streamed text and
@@ -732,12 +833,16 @@ class TUICodingAgent:
                             if allowed:
                                 self.agent.state = AgentState.EXECUTING
                                 if action == "allow_whitelist" and command_arg:
-                                    # 提取命令前缀加入白名单
-                                    prefix = command_arg.strip().split()[0] if command_arg.strip() else ""
-                                    if prefix:
-                                        self.permission_guard.add_to_whitelist(prefix)
+                                    # 加入会话级白名单：记忆本次同意，同 session 内
+                                    # 相同命令签名自动通过（如 git push 不会让
+                                    # git reset --hard 自动通过）
+                                    signature = self.permission_guard.add_to_session_whitelist(
+                                        command_arg
+                                    )
+                                    if signature:
                                         console.print(
-                                            f"  ● [dim]Whitelisted: {prefix}... (auto-approved next time)[/dim]"
+                                            f"  ● [dim]Session whitelist: {signature} "
+                                            f"(auto-approved this session)[/dim]"
                                         )
                             else:
                                 self.agent.handle_permission_denied(tc)
@@ -927,7 +1032,9 @@ class TUICodingAgent:
                 elif cmd == "/load":
                     self.load_session()
                 elif cmd == "/perm":
-                    parts = user_input.split(maxsplit=2)
+                    # /perm 可能带多个参数（如 /perm whitelist add git push），
+                    # 需要完整传递除 /perm 之外的所有内容
+                    parts = user_input.split(maxsplit=1)
                     self.show_permissions(parts[1] if len(parts) > 1 else "")
                 elif cmd == "/exit":
                     self.print_system("Goodbye!")
