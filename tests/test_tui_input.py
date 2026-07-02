@@ -13,7 +13,7 @@ def test_framed_input_available_with_vendor():
 def test_build_framed_input_layout_structure():
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.enums import DEFAULT_BUFFER
-    from prompt_toolkit.layout import HSplit
+    from prompt_toolkit.layout import FloatContainer, HSplit
 
     buffer = Buffer(name=DEFAULT_BUFFER)
     layout = tui_input._build_framed_input_layout(
@@ -22,8 +22,10 @@ def test_build_framed_input_layout_structure():
         status_text=lambda: "mock · ready",
         hint="/help",
     )[0]
-    assert isinstance(layout.container, HSplit)
-    assert len(layout.container.children) == 3
+    # Layout wraps HSplit in FloatContainer for completions menu
+    assert isinstance(layout.container, FloatContainer)
+    assert isinstance(layout.container.content, HSplit)
+    assert len(layout.container.content.children) == 3
 
 
 def test_accept_key_bindings_merge():

@@ -31,6 +31,19 @@ from typing import Callable, Protocol
 _HRULE = "─"
 DOUBLE_CTRL_C_SECONDS = 0.75
 
+# Slash command list for autocomplete (must match tui.py command routing)
+_SLASH_COMMANDS: list[tuple[str, str]] = [
+    ("/help", "Show all commands"),
+    ("/clear", "Clear the conversation"),
+    ("/models", "List or switch models"),
+    ("/status", "Show agent status"),
+    ("/debug", "Toggle LLM debug panels"),
+    ("/perm", "Permission settings"),
+    ("/expand", "Expand collapsed results"),
+    ("/load", "Load a saved session"),
+    ("/exit", "Exit the program"),
+]
+
 
 class InputExitRequested(Exception):
     """连续两次 Ctrl+C：请求退出程序。"""
@@ -76,6 +89,12 @@ def _input_style():
         "hrule": "bg:default fg:ansibrightblack noreverse",
         "footer": "bg:default fg:ansibrightblack noreverse",
         "hint": "bg:default fg:ansibrightblack italic noreverse",
+        # Completions menu (slash command suggestions)
+        "completion-menu": "bg:#1e1e2e fg:default",
+        "completion-menu.completion": "bg:#1e1e2e fg:default",
+        "completion-menu.completion.current": "bg:#5f5f87 fg:white bold",
+        "completion-menu.meta.completion": "bg:#1e1e2e fg:ansibrightblack",
+        "completion-menu.meta.completion.current": "bg:#5f5f87 fg:ansibrightblack",
     })
 
 
@@ -104,6 +123,43 @@ def _configure_console_cursor(*, visible: bool) -> None:
         kernel32.SetConsoleCursorInfo(handle, ctypes.byref(info))
     except Exception:
         pass
+
+
+from prompt_toolkit.completion import Completer, Completion
+
+
+class _SlashCompleter(Completer):
+    """Completer that suggests slash commands when input starts with /.
+
+    Only triggers when the first character is '/' and no space has been typed.
+    Yields matching commands with their descriptions for the completions menu.
+
+    Inherits from prompt_toolkit.completion.Completer to get the default
+    get_completions_async implementation (which delegates to get_completions).
+    """
+
+    def __init__(self, commands: list[tuple[str, str]] | None = None) -> None:
+        self._commands = commands if commands is not None else _SLASH_COMMANDS
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        # Only trigger when input starts with /
+        if not text.startswith("/"):
+            return
+        # Stop completing after space (command + args phase)
+        if " " in text:
+            return
+
+        word = text.lstrip("/").lower()
+        for cmd, desc in self._commands:
+            cmd_name = cmd.lstrip("/").lower()
+            if cmd_name.startswith(word):
+                yield Completion(
+                    cmd,
+                    start_position=-len(text),
+                    display=cmd,
+                    display_meta=desc,
+                )
 
 
 def _create_blinking_cursor_output():
@@ -156,6 +212,14 @@ def _build_accept_key_bindings(buffer, tracker: _CtrlCTracker):
 
     @accept_kb.add("enter", filter=focused, eager=True)
     def _accept(event) -> None:
+        # If completions menu is open, accept the selected completion first
+        if buffer.complete_state and buffer.complete_state.completions:
+            state = buffer.complete_state
+            # Select the first completion if none highlighted yet
+            if state.complete_index is None:
+                state.go_to_index(0)
+            buffer.apply_completion(state.current_completion)
+            return
         tracker.reset()
         event.app.exit(result=buffer.text, style="class:accepted")
 
@@ -198,9 +262,10 @@ def _build_framed_input_layout(
     hint: str,
 ):
     from prompt_toolkit.formatted_text import FormattedText
-    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
     from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
     from prompt_toolkit.layout.dimension import Dimension
+    from prompt_toolkit.layout.menus import CompletionsMenu
 
     w = _hrule(width)
     prompt_cols = 2  # "> "
@@ -239,26 +304,39 @@ def _build_framed_input_layout(
         return Dimension.exact(max(1, visual_rows or 1))
 
     layout = Layout(
-        HSplit([
-            Window(
-                FormattedTextControl(top_line),
-                dont_extend_height=True,
-                height=Dimension.exact(1),
-            ),
-            Window(
-                buffer_control,
-                height=buffer_height,
-                dont_extend_height=True,
-                get_line_prefix=_line_prefix,
-                wrap_lines=True,
-                always_hide_cursor=False,
-            ),
-            Window(
-                FormattedTextControl(footer_lines),
-                dont_extend_height=True,
-                height=Dimension.exact(2),
-            ),
-        ])
+        FloatContainer(
+            content=HSplit([
+                Window(
+                    FormattedTextControl(top_line),
+                    dont_extend_height=True,
+                    height=Dimension.exact(1),
+                ),
+                Window(
+                    buffer_control,
+                    height=buffer_height,
+                    dont_extend_height=True,
+                    get_line_prefix=_line_prefix,
+                    wrap_lines=True,
+                    always_hide_cursor=False,
+                ),
+                Window(
+                    FormattedTextControl(footer_lines),
+                    dont_extend_height=True,
+                    height=Dimension.exact(2),
+                ),
+            ]),
+            floats=[
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    transparent=True,
+                    content=CompletionsMenu(
+                        max_height=10,
+                        scroll_offset=1,
+                    ),
+                ),
+            ],
+        )
     )
     return layout, buffer_control
 
@@ -275,7 +353,11 @@ async def _read_framed_input_ptk(
     from prompt_toolkit.enums import DEFAULT_BUFFER
     from prompt_toolkit.patch_stdout import patch_stdout
 
-    buffer = Buffer(name=DEFAULT_BUFFER)
+    buffer = Buffer(
+        name=DEFAULT_BUFFER,
+        completer=_SlashCompleter(),
+        complete_while_typing=True,
+    )
     tracker = _CtrlCTracker()
     layout, _ = _build_framed_input_layout(
         buffer=buffer,
