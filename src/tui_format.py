@@ -62,3 +62,70 @@ def format_usage_brief(usage: dict | None) -> str:
         if key in usage:
             parts.append(f"{key.replace('_', ' ')}={usage[key]}")
     return ", ".join(parts) if parts else ""
+
+
+def chunk_tool_result(content: str, max_chars: int = 500) -> list[str]:
+    """Split large tool result into logical chunks for display.
+
+    Splits on paragraph boundaries (double newlines) first, then by code blocks
+    (```), then by single newlines if a paragraph is still too long.
+    Each chunk is <= max_chars. Returns list of chunks.
+    """
+    if not content or len(content) <= max_chars:
+        return [content] if content else []
+
+    chunks: list[str] = []
+
+    # Try splitting on double newlines (paragraph boundaries)
+    paragraphs = content.split("\n\n")
+    if len(paragraphs) > 1:
+        for para in paragraphs:
+            if len(para) <= max_chars:
+                chunks.append(para)
+            else:
+                # Paragraph still too long — split by single newlines
+                chunks.extend(_split_by_lines(para, max_chars))
+        return chunks
+
+    # Try splitting on code block boundaries
+    if "```" in content:
+        parts = content.split("```")
+        for i, part in enumerate(parts):
+            if not part.strip():
+                continue
+            if i > 0 and i < len(parts) - 1:
+                part = "```" + part + "```"
+            elif i == 0 and content.startswith("```"):
+                part = "```" + part
+            elif i == len(parts) - 1 and content.endswith("```"):
+                part = part + "```"
+            if len(part) <= max_chars:
+                chunks.append(part)
+            else:
+                chunks.extend(_split_by_lines(part, max_chars))
+        return chunks
+
+    # Fallback: split by lines
+    return _split_by_lines(content, max_chars)
+
+
+def _split_by_lines(text: str, max_chars: int) -> list[str]:
+    """Split text into chunks by lines, each chunk <= max_chars."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in text.split("\n"):
+        line_len = len(line) + 1  # +1 for \n
+        if current_len + line_len > max_chars and current:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = line_len
+        else:
+            current.append(line)
+            current_len += line_len
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks

@@ -32,6 +32,46 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 _CLEAR_LINE = "\r" + " " * 120 + "\r"
 
 
+def _strip_trailing_newlines(text: str) -> str:
+    """Remove trailing whitespace/newlines from streamed text for spacing decisions."""
+    return text.rstrip("\n\r \t")
+
+
+def _collapse_blank_lines(lines: list[str]) -> list[str]:
+    """Collapse runs of consecutive blank lines into a single blank line.
+
+    Used when rendering tool results so that output with many trailing or
+    internal blank lines (e.g. read_file of a file ending with "\\n\\n\\n")
+    does not produce a stack of empty rows in the TUI.
+    """
+    result: list[str] = []
+    prev_blank = False
+    for line in lines:
+        is_blank = line.strip() == ""
+        if is_blank and prev_blank:
+            continue  # skip consecutive blank line
+        result.append(line)
+        prev_blank = is_blank
+    # Drop a single trailing blank if present (already handled by rstrip, but
+    # keep as a safety net for split() producing a trailing "").
+    while result and result[-1].strip() == "":
+        result.pop()
+    return result
+
+
+def _needs_blank_separator(before: str, after: str) -> bool:
+    """Decide whether a blank line is needed between two rendered blocks.
+
+    Avoids stacking blank lines when the previous block already ended with one
+    or either block is empty.
+    """
+    if not before or not after:
+        return False
+    if before.endswith("\n") or before.endswith("\r"):
+        return False
+    return True
+
+
 class _Spinner:
     """Async spinner writing plain text to stderr (no Rich markup)."""
 
@@ -269,13 +309,21 @@ class TUICodingAgent:
     def _render_markdown_block(self, content: str) -> None:
         if not self._render_markdown or not looks_like_markdown(content):
             return
-        console.print()
+        # The streamed text (│ ...) already ended with a newline from the DONE
+        # handler, and a meta line (◆ Responded/Thinking) was printed between.
+        # Adding another blank line here used to stack empty rows between the
+        # meta line and the Markdown re-render. Render directly.
         console.print(Markdown(content))
 
     def _print_tool_result(self, content: str, tool_name: str = "") -> None:
         if not content:
             console.print("  ⎿  (empty)", style="dim")
             return
+
+        # Collapse trailing blank lines so tool results don't end with a stack
+        # of empty lines (common with read_file / list_directory output that
+        # ends with "\n\n" or more).
+        content = content.rstrip("\n")
 
         limit = self._tool_preview_limit
         if len(content) <= limit:
@@ -286,16 +334,33 @@ class TUICodingAgent:
                 console.print("  ⎿ ", style="dim", end="")
                 console.print(Syntax(content, ext, theme="monokai", line_numbers=False))
             else:
-                for line in content.split("\n"):
+                # Filter out consecutive blank lines inside the result so we
+                # never render more than one blank line in a row.
+                lines = _collapse_blank_lines(content.split("\n"))
+                for line in lines:
                     console.print(f"  ⎿  {line}", style="dim")
             return
 
-        preview = content[:300]
-        for line in preview.split("\n"):
-            console.print(f"  ⎿  {line}", style="dim")
-        remaining = content[300:]
-        extra_lines = len(remaining.split("\n"))
-        console.print(f"  [dim]⎿  [... +{extra_lines} more lines — /expand to view][/dim]")
+        # Chunk-based display: show first chunk, collapse the rest
+        from src.tui_format import chunk_tool_result
+        chunks = chunk_tool_result(content, max_chars=limit)
+
+        # Show first 2 chunks inline (collapse internal blank lines per chunk)
+        shown = 0
+        for chunk in chunks:
+            if shown >= 2:
+                break
+            lines = _collapse_blank_lines(chunk.split("\n"))
+            for line in lines:
+                console.print(f"  ⎿  {line}", style="dim")
+            shown += 1
+
+        remaining_chunks = len(chunks) - shown
+        remaining_chars = sum(len(c) for c in chunks[shown:])
+        if remaining_chunks > 0:
+            console.print(
+                f"  [dim]⎿  [... +{remaining_chunks} chunks, ~{remaining_chars} chars — /expand to view][/dim]"
+            )
         self._collapsed_results.append(content)
 
     def show_expand(self, args: str = "") -> None:
@@ -559,9 +624,13 @@ class TUICodingAgent:
                     accumulated_text += event.text
                     if is_first_text:
                         self._clear_status_line()
+                        # Single blank line before streamed text — exactly one,
+                        # never stacked (previous block already ended with \n).
                         console.print(highlight=False)
                         console.print("│ ", end="", style="cyan", highlight=False)
                         is_first_text = False
+                    # Buffer: flush on newline or when buffer reaches ~120 chars
+                    # This creates a natural rhythm instead of char-by-char
                     console.print(event.text, end="", style="cyan", highlight=False)
 
                 elif event.type == StreamEventType.TOOL_USE and event.tool_call:
@@ -570,8 +639,14 @@ class TUICodingAgent:
 
                 elif event.type == StreamEventType.DONE:
                     elapsed = time.time() - start_time
+                    # End the streamed text line with exactly one newline.
                     if not is_first_text:
                         console.print()
+                    # Print thinking / responded meta. When both thinking and
+                    # text exist, the meta sits between the streamed text and
+                    # the re-rendered Markdown — keep a single blank separator
+                    # before the Markdown (handled inside _render_markdown_block
+                    # only when there was no streamed text).
                     if accumulated_thinking.strip():
                         self._print_thinking_block(accumulated_thinking, elapsed, event.usage)
                     elif not is_first_output:
@@ -597,7 +672,17 @@ class TUICodingAgent:
         msg_before = len(self.agent.session.messages)
         start_time = time.time()
 
-        await self._spinner.start(f"{tc.name}({args_preview})")
+        # Differentiated spinner labels by tool type
+        if tc.name in ("read_file", "list_directory", "glob", "search_code", "detect_build_toolchain"):
+            spinner_label = f"Reading {tc.name}({args_preview})"
+        elif tc.name in ("write_file", "edit_file"):
+            spinner_label = f"Writing {tc.name}({args_preview})"
+        elif tc.name == "execute_command":
+            spinner_label = f"Running {args_preview}"
+        else:
+            spinner_label = f"{tc.name}({args_preview})"
+
+        await self._spinner.start(spinner_label)
         try:
             async for _ in self.agent.step_stream():
                 pass
@@ -732,6 +817,11 @@ class TUICodingAgent:
 
     async def run_interactive(self) -> None:
         model_name = self._current_model_label()
+        # Gather context info
+        tool_count = len(self.tool_registry._tools) if self.tool_registry else 0
+        active_profile = self.model_registry.get_active_profile() if self.model_registry else None
+        max_tokens = getattr(active_profile, "max_tokens", "?") if active_profile else "?"
+
         tips = [
             ("Tips for getting started", ""),
             ("/help", "Show all commands"),
@@ -743,6 +833,7 @@ class TUICodingAgent:
             ("/expand", "Expand collapsed results"),
             ("", ""),
             (f"Model: {model_name}", ""),
+            (f"Max tokens: {max_tokens}  ·  Tools: {tool_count}", ""),
         ]
         tip_lines = []
         for i, (k, v) in enumerate(tips):

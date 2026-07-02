@@ -351,12 +351,18 @@ async def _read_framed_input_ptk(
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.cursor_shapes import CursorShape, SimpleCursorShapeConfig
     from prompt_toolkit.enums import DEFAULT_BUFFER
+    from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.patch_stdout import patch_stdout
+
+    # Shared history across input sessions (up/down arrows to recall)
+    if not hasattr(_read_framed_input_ptk, "_history"):
+        _read_framed_input_ptk._history = InMemoryHistory()
 
     buffer = Buffer(
         name=DEFAULT_BUFFER,
         completer=_SlashCompleter(),
         complete_while_typing=True,
+        history=_read_framed_input_ptk._history,
     )
     tracker = _CtrlCTracker()
     layout, _ = _build_framed_input_layout(
