@@ -24,6 +24,10 @@ pytest tests/ -v
 python -m src.main --project-dir .
 ```
 
+### Windows 一键启动
+
+双击根目录 `start.bat` 即可运行（自动探测 Python、按需下载 vendor 依赖、启动 TUI）。
+
 ## 约束
 
 - 自主实现，不以 `opencode/`、`codex/`、`DeepSeek-Reasonix/` 为提交基底

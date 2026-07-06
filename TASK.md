@@ -250,3 +250,24 @@
 - 无
 
 ---
+
+## [2026-06-29] Windows 一键启动脚本
+
+**目标**：提供 Windows 下双击即用的启动入口，降低使用门槛
+**状态**：已完成
+
+### 完成内容
+- 新增根目录 `start.bat`：双击运行，无需手动配置环境
+  - `cd /d %~dp0` 自动定位项目根目录
+  - 探测 Python（`python` → `py` 回退），缺失时给出安装提示
+  - 校验 `src/main.py` 存在
+  - 检测 `src/_vendor/` 是否就绪（httpx/rich/prompt_toolkit 标记目录），未就绪时自动调用 `scripts/vendor_deps.py` 下载
+  - 启动 `python -m src.main --project-dir .`，退出后 `pause` 便于查看日志
+- 更新 `README.md`：新增「Windows 一键启动」章节、项目结构补 `start.bat`
+- 更新 `AGENTS.md`：快速命令区补充 Windows 启动说明
+- 追加本任务记录
+
+### 遗留 / 下一步
+- 无
+
+---

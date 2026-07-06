@@ -16,6 +16,7 @@
 
 ```
 coding_agent_tui/
+├── start.bat                 # Windows 一键启动脚本（双击运行）
 ├── deliverables/              # 验证产物截图
 ├── .ai_history/logs/          # 会话记录
 ├── src/
@@ -74,6 +75,19 @@ python scripts/vendor_deps.py --dry-run   # 仅打印 pip 命令
 ```
 
 ## 使用
+
+### Windows 一键启动
+
+仓库根目录提供 `start.bat`，**双击即可运行**，无需手动配置环境：
+
+- 自动定位项目根目录
+- 自动探测 Python（`python` / `py`）
+- 首次运行时自动下载 `src/_vendor/` 运行时依赖（需联网）
+- 依赖就绪后启动 TUI
+
+> 首次双击会联网下载 httpx / rich / prompt_toolkit 等依赖；之后再次双击即可秒开。
+
+### 命令行启动
 
 ```bash
 python -m src.main --project-dir .
