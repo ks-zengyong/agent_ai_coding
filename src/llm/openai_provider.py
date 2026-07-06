@@ -104,7 +104,11 @@ class OpenAIProvider(BaseLLMProvider):
             raw_response=raw_text,
         )
 
-        return ChatResponse(content=full_content, tool_calls=tool_calls)
+        return ChatResponse(
+            content=full_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
 
     def _parse_response(
         self, raw_text: str
@@ -438,7 +442,11 @@ class OpenAIProvider(BaseLLMProvider):
         return self._tools
 
     def set_tool_definitions(self, tools: List[Dict[str, Any]]) -> None:
-        self._tools = tools
+        # Sort tools by name to ensure stable ordering for prefix cache
+        self._tools = sorted(
+            tools,
+            key=lambda t: t.get("function", {}).get("name", ""),
+        )
 
     @property
     def model_name(self) -> str:

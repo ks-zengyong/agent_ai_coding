@@ -17,6 +17,8 @@ from src.tools.shell import ExecuteCommandTool, DetectBuildToolchainTool
 from src.agent import CodingAgent
 from src.permissions import PermissionGuard
 from src.llm.model_registry import ModelRegistry
+from src.llm.prefix_cache import PrefixCacheManager
+from src.agent_runner import build_system_prompt
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,11 +102,23 @@ def main() -> None:
 
     permission_guard = PermissionGuard(config.permission)
 
+    active_profile = model_registry.get_active_profile()
+    system_prompt = build_system_prompt(active_profile.display_label())
+
+    prefix_cache = None
+    if config.cache.enabled:
+        prefix_cache = PrefixCacheManager(
+            system_prompt=system_prompt,
+            tools=tool_definitions,
+        )
+
     agent = CodingAgent(
         provider=provider,
         tool_registry=tool_registry,
         permission_guard=permission_guard,
         max_loop=config.provider.max_loop,
+        prefix_cache=prefix_cache,
+        cache_log_interval=config.cache.log_interval,
     )
 
     from src.agent_runner import save_session

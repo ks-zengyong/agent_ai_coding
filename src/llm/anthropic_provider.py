@@ -308,7 +308,10 @@ class AnthropicProvider(BaseLLMProvider):
         return self._tools
 
     def set_tool_definitions(self, tools: List[Dict[str, Any]]) -> None:
-        self._tools = tools
+        self._tools = sorted(
+            tools,
+            key=lambda t: t.get("function", {}).get("name", ""),
+        )
 
     @property
     def model_name(self) -> str:

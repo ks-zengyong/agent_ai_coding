@@ -69,7 +69,10 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        return [t.to_definition() for t in self._tools.values()]
+        return sorted(
+            [t.to_definition() for t in self._tools.values()],
+            key=lambda t: t.get("function", {}).get("name", ""),
+        )
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> ToolResult:
         tool = self._tools.get(tool_name)

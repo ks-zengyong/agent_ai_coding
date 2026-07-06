@@ -67,6 +67,7 @@ class ChatMessage:
 class ChatResponse:
     content: str
     tool_calls: Optional[List[ToolCall]] = None
+    usage: Optional[Dict[str, Any]] = None
 
 
 class BaseLLMProvider(ABC):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import AsyncIterator, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from src.context import Message, MessageType, Session
 from src.llm.base import BaseLLMProvider, StreamEvent, StreamEventType, ToolCall
+from src.llm.prefix_cache import PrefixCacheManager
 from src.permissions import PermissionGuard
 from src.tools.registry import ToolRegistry
 
@@ -25,10 +26,14 @@ class CodingAgent:
         tool_registry: ToolRegistry,
         permission_guard: PermissionGuard,
         max_loop: int = 100,
+        prefix_cache: Optional[PrefixCacheManager] = None,
+        cache_log_interval: int = 10,
     ) -> None:
         self.provider = provider
         self.tool_registry = tool_registry
         self.permission_guard = permission_guard
+        self.prefix_cache = prefix_cache
+        self._cache_log_interval = max(0, cache_log_interval)
         self.session = Session()
         self.state = AgentState.IDLE
         self.pending_tool_call: Optional[ToolCall] = None
@@ -142,7 +147,7 @@ class CodingAgent:
         if self.state == AgentState.IDLE or self.state == AgentState.THINKING:
             self.state = AgentState.THINKING
             try:
-                chat_messages = self.session.to_chat_messages()
+                chat_messages = self._build_chat_messages()
                 accumulated_text = ""
                 accumulated_tool_calls: List[ToolCall] = []
 
@@ -157,6 +162,7 @@ class CodingAgent:
                             accumulated_tool_calls.append(event.tool_call)
                             yield event
                     elif event.type == StreamEventType.DONE:
+                        self._record_usage(event.usage)
                         # Build assistant message from accumulated stream
                         assistant_msg = Message(
                             type=MessageType.ASSISTANT,
@@ -211,11 +217,43 @@ class CodingAgent:
         if self.state == AgentState.AWAITING_PERMISSION:
             return
 
+    def _build_chat_messages(self) -> List:
+        """Build chat messages with stable prefix for cache hits."""
+        history = self.session.to_chat_messages()
+        if self.prefix_cache:
+            current_tools = self.tool_registry.get_tool_definitions()
+            if not self.prefix_cache.verify_stable(current_tools):
+                from src import debug_info
+
+                self.prefix_cache.sync_tools(current_tools)
+                debug_info.log_info(
+                    "Prefix cache: tool definitions changed; fingerprint updated"
+                )
+            return self.prefix_cache.build_messages(history)
+        return history
+
+    def _record_usage(self, usage: Optional[Dict[str, Any]] = None) -> None:
+        """Record token usage for cache metrics."""
+        if not self.prefix_cache or not usage:
+            return
+        self.prefix_cache.record_usage(usage)
+        if self._cache_log_interval <= 0:
+            return
+        metrics = self.prefix_cache.get_metrics()
+        if metrics.total_requests % self._cache_log_interval != 0:
+            return
+        from src import debug_info
+
+        debug_info.log_info(self.prefix_cache.metrics.summary())
+
     async def think(self) -> None:
         self.state = AgentState.THINKING
         try:
-            chat_messages = self.session.to_chat_messages()
+            chat_messages = self._build_chat_messages()
             response = await self.provider.chat(chat_messages)
+
+            # Record usage for cache hit tracking
+            self._record_usage(response.usage)
 
             assistant_msg = Message(
                 type=MessageType.ASSISTANT,

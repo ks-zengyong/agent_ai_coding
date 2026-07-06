@@ -420,6 +420,19 @@ class TUICodingAgent:
         self._clear_status_line()
         console.print(f"● [dim]{message}[/dim]")
 
+    def print_user_message(self, message: str) -> None:
+        """Echo submitted input into the transcript (input frame is erased on send)."""
+        self._clear_status_line()
+        text = message.strip()
+        if not text:
+            return
+        rule = "─" * self._terminal_width()
+        console.print(f"[dim]{rule}[/dim]", highlight=False)
+        lines = _collapse_blank_lines(text.split("\n"))
+        for index, line in enumerate(lines):
+            prefix = "> " if index == 0 else "  "
+            console.print(f"[bold]{prefix}[/bold]{line}", highlight=False)
+
     def print_error(self, message: str) -> None:
         self._clear_status_line()
         console.print(f"✗ [red]{message}[/red]")
@@ -458,6 +471,9 @@ class TUICodingAgent:
             console.print(f"▸ Collapsed results: {len(self._collapsed_results)}")
         if self._collapsed_thinking:
             console.print(f"▸ Collapsed thinking: {len(self._collapsed_thinking)}")
+        if self.agent.prefix_cache:
+            console.print(f"▸ {self.agent.prefix_cache.metrics.summary()}")
+            console.print(f"▸ Prefix fp: {self.agent.prefix_cache.fingerprint[:12]}…")
 
     def show_models(self, args: str = "") -> None:
         if not self.model_registry:
@@ -478,6 +494,18 @@ class TUICodingAgent:
                 self.agent.provider = self.model_registry.apply_tools_to_active(tools)
             else:
                 self.agent.provider = self.model_registry.get_active_provider()
+            if self.agent.prefix_cache and self.tool_registry:
+                from src.agent_runner import build_system_prompt
+
+                tools = self.tool_registry.get_tool_definitions()
+                changed = self.agent.prefix_cache.update_prefix(
+                    build_system_prompt(profile.display_label()),
+                    tools,
+                )
+                if changed:
+                    self.print_system(
+                        "Prefix cache updated for new model (next request may miss cache)."
+                    )
             self.print_system(
                 f"Switched to [{profile.id}] {profile.display_label()} ({profile.provider})"
             )
@@ -724,9 +752,8 @@ class TUICodingAgent:
                     accumulated_text += event.text
                     if is_first_text:
                         self._clear_status_line()
-                        # Single blank line before streamed text — exactly one,
-                        # never stacked (previous block already ended with \n).
-                        console.print(highlight=False)
+                        # User message block already ends with a newline; do not
+                        # insert another blank row before the assistant reply.
                         is_first_text = False
                         prev_printed_blank = False
                     # Accumulate into the buffer and flush complete lines.
@@ -793,22 +820,15 @@ class TUICodingAgent:
         return time.time() - start_time, msg_before
 
     async def run_agent_loop(self, user_message: str) -> None:
-        from src.agent_runner import build_system_prompt
+        from src.agent_runner import ensure_session_system_message
 
         messages_before = len(self.agent.session.messages)
 
-        has_system = any(
-            m.type == MessageType.USER and m.content.startswith("[System]")
-            for m in self.agent.session.messages
+        identity = (
+            self.model_registry.get_active_profile().display_label()
+            if self.model_registry else None
         )
-        if not has_system:
-            identity = (
-                self.model_registry.get_active_profile().display_label()
-                if self.model_registry else None
-            )
-            self.agent.session.add_message(
-                Message(type=MessageType.USER, content=f"[System]\n{build_system_prompt(identity)}")
-            )
+        ensure_session_system_message(self.agent, identity)
 
         self.agent.session.add_message(Message(type=MessageType.USER, content=user_message))
         self.agent.state = AgentState.IDLE
@@ -1043,6 +1063,7 @@ class TUICodingAgent:
                     self.print_system(f"Unknown command: {cmd}. Type /help for available commands.")
                 continue
 
+            self.print_user_message(user_input)
             await self.run_agent_loop(user_input)
 
 

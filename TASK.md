@@ -271,3 +271,21 @@
 - 无
 
 ---
+
+## [2026-07-06 17:20] 前缀缓存优化落地
+
+**目标**：统一 system prompt、流式记录 usage、兼容 Anthropic 缓存字段、工具排序与可观测性
+**状态**：已完成
+
+### 完成内容
+- 统一使用 `agent_runner.build_system_prompt`；启用 prefix cache 时不再注入 `[System]` user 消息
+- `PrefixCacheManager`：过滤重复 system 消息、`extract_cached_tokens` 兼容 OpenAI/Anthropic
+- `step_stream` DONE 时 `_record_usage`；`cache_log_interval` 定期 `log_info`
+- `/status` 显示缓存命中率；`/models` 切换时 `update_prefix`
+- Anthropic provider 与 tool registry 工具定义按名称排序
+- 新增 `tests/test_prefix_cache.py`（8 项）
+
+### 遗留 / 下一步
+- 真实 API 下确认网关返回 `cached_tokens` / `cache_read_input_tokens`
+
+---

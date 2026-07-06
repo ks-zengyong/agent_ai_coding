@@ -199,36 +199,51 @@ def _reset_stdout_cursor() -> None:
     sys.stdout.flush()
 
 
+def _ensure_vt_mode() -> None:
+    """Enable VT100 escape processing on legacy Windows consoles."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+        enable_vt = 0x0004
+        kernel32.SetConsoleMode(handle, mode.value | enable_vt)
+    except Exception:
+        pass
+
+
+def _erase_lines_from_cursor(num_lines: int) -> None:
+    """Clear ``num_lines`` rows starting at the cursor (VT100 fallback)."""
+    n = max(1, min(num_lines, 200))
+    for i in range(n):
+        sys.stdout.write("\x1b[2K")
+        if i < n - 1:
+            sys.stdout.write("\x1b[1B")
+    if n > 1:
+        sys.stdout.write(f"\x1b[{n - 1}A")
+    sys.stdout.flush()
+
+
 def _delete_input_frame_lines(num_lines: int) -> None:
-    """Delete the blank lines left behind by erase_when_done after the input
-    frame is dismissed.
+    """Clear blank rows left behind by ``erase_when_done`` after input dismiss.
 
-    ``erase_when_done=True`` causes prompt_toolkit to call ``renderer.erase()``
-    on exit, which moves the cursor back to the top of the input frame and
-    runs ``erase_down()`` (``\\x1b[J``). ``erase_down`` clears the *content*
-    of the frame's rows but does **not** remove the rows themselves — they
-    remain as blank lines. With a 4-row frame (hrule + input + hrule +
-    status) this leaves up to 4 blank lines between turns, and more when the
-    input soft-wraps.
-
-    After ``erase()``, the cursor sits at column 0 of the frame's top row.
-    We emit ``\\x1b[{n}M`` (Delete Lines) to actually remove those ``n``
-    rows so that content below shifts up, collapsing the gap. The cursor
-    stays at the same screen position, which is now the line immediately
-    following the previous turn's output — exactly where the next turn
-    should begin.
-
-    On terminals without VT100 support (old Windows consoles without
-    ``ENABLE_VIRTUAL_TERMINAL_PROCESSING``) the escape sequence is ignored
-    and we fall back to the single newline written by
-    ``_reset_stdout_cursor``.
+    ``erase_when_done=True`` moves the cursor to the top of the input frame and
+    runs ``erase_down()`` (``\\x1b[J``), which clears content but keeps the
+    rows. We erase each row in place so the echoed user message and assistant
+    reply can render immediately without a gap of empty lines.
     """
     if num_lines <= 0:
         return
-    # Clamp to a sane upper bound to avoid pathological values.
-    n = max(1, min(num_lines, 200))
-    sys.stdout.write(f"\x1b[{n}M")
-    sys.stdout.flush()
+    _ensure_vt_mode()
+    # Clear the input-frame rows in place. ``erase_when_done`` already blanked
+    # their content but left the rows; we wipe them so the echoed user message
+    # and assistant reply render without a stack of empty lines.
+    _erase_lines_from_cursor(max(1, min(num_lines, 200)))
 
 
 def _build_accept_key_bindings(buffer, tracker: _CtrlCTracker):

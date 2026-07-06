@@ -63,19 +63,19 @@ def test_estimate_wrapped_lines_soft_wrap():
     assert tui_input._estimate_wrapped_lines(text, 20) == 4
 
 
-def test_delete_input_frame_lines_writes_delete_escape(capsys):
-    """_delete_input_frame_lines emits the VT100 Delete-Lines sequence."""
+def test_delete_input_frame_lines_writes_erase_escape(capsys):
+    """_delete_input_frame_lines clears each frame row via ESC[2K."""
     tui_input._delete_input_frame_lines(4)
     captured = capsys.readouterr()
-    assert "\x1b[4M" in captured.out
+    assert captured.out.count("\x1b[2K") == 4
+    assert "\x1b[3A" in captured.out
 
 
 def test_delete_input_frame_lines_clamps_large_values(capsys):
-    """Pathologically large values are clamped to 200 to avoid huge sequences."""
+    """Pathologically large values are clamped to 200 rows."""
     tui_input._delete_input_frame_lines(99999)
     captured = capsys.readouterr()
-    assert "\x1b[200M" in captured.out
-    assert "\x1b[99999M" not in captured.out
+    assert captured.out.count("\x1b[2K") == 200
 
 
 def test_delete_input_frame_lines_zero_is_noop(capsys):

@@ -9,6 +9,32 @@ from src.agent import AgentState, CodingAgent
 from src.context import Message, MessageType
 
 
+def uses_prefix_cache_system(agent: CodingAgent) -> bool:
+    """True when the API ``system`` role carries the session system prompt."""
+    return agent.prefix_cache is not None
+
+
+def ensure_session_system_message(
+    agent: CodingAgent,
+    model_identity: Optional[str] = None,
+) -> None:
+    """Inject legacy ``[System]`` user message only when prefix cache is off."""
+    if uses_prefix_cache_system(agent):
+        return
+    has_system = any(
+        m.type == MessageType.USER and (m.content or "").startswith("[System]")
+        for m in agent.session.messages
+    )
+    if has_system:
+        return
+    agent.session.add_message(
+        Message(
+            type=MessageType.USER,
+            content=f"[System]\n{build_system_prompt(model_identity)}",
+        )
+    )
+
+
 _SYSTEM_PROMPT_TEMPLATE = """You are a terminal coding agent. Your identity is {identity}. You are NOT Claude, NOT ChatGPT, NOT any other assistant. Complete user tasks by calling tools.
 
 Rules:
@@ -58,10 +84,7 @@ async def run_agent_until_done(
     ``model_identity`` 透传给 :func:`build_system_prompt`，用于在 system prompt
     中声明当前模型身份，抑制长上下文下的身份漂移。None 时使用中性表述。
     """
-    if not any(m.type == MessageType.USER for m in agent.session.messages):
-        agent.session.add_message(
-            Message(type=MessageType.USER, content=f"[System]\n{build_system_prompt(model_identity)}")
-        )
+    ensure_session_system_message(agent, model_identity)
 
     agent.session.add_message(Message(type=MessageType.USER, content=user_message))
     agent.state = AgentState.IDLE

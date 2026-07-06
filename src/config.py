@@ -65,6 +65,12 @@ class TuiConfig:
 
 
 @dataclass
+class CacheConfig:
+    enabled: bool = True
+    log_interval: int = 10  # print metrics every N requests
+
+
+@dataclass
 class Config:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     models: List[ModelProfile] = field(default_factory=list)
@@ -72,6 +78,7 @@ class Config:
     tools: List[ToolConfig] = field(default_factory=list)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     tui: TuiConfig = field(default_factory=TuiConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     history_dir: Path = field(default_factory=lambda: Path(".ai_history/logs"))
     log_level: str = "info"
     config_sources: List[str] = field(default_factory=list)
@@ -205,6 +212,8 @@ class Config:
             data["permission"] = _build_dataclass(PermissionConfig, data["permission"])
         if isinstance(data.get("tui"), dict):
             data["tui"] = _build_dataclass(TuiConfig, data["tui"])
+        if isinstance(data.get("cache"), dict):
+            data["cache"] = _build_dataclass(CacheConfig, data["cache"])
         if isinstance(data.get("models"), list):
             data["models"] = [
                 _build_dataclass(ModelProfile, m) if isinstance(m, dict) else m
@@ -333,6 +342,11 @@ def _merge_configs(base: Config, override: Config) -> Config:
         tool_result_preview=override.tui.tool_result_preview,
     )
 
+    merged_cache = CacheConfig(
+        enabled=override.cache.enabled,
+        log_interval=override.cache.log_interval,
+    )
+
     # 用 Path 相等比较，避免 Windows 下 str(Path) 含反斜杠导致误判
     history = (
         override.history_dir
@@ -347,6 +361,7 @@ def _merge_configs(base: Config, override: Config) -> Config:
         tools=merged_tools,
         permission=merged_permission,
         tui=merged_tui,
+        cache=merged_cache,
         history_dir=history,
         log_level=_pick(override.log_level, base.log_level, sentinel="info"),
     )
